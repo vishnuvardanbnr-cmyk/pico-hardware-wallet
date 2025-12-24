@@ -578,8 +578,8 @@ export default function DApps() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-64">
-              {evmWallets.length > 0 ? (
-                evmWallets.map((wallet) => {
+              {chainWallets.length > 0 ? (
+                chainWallets.map((wallet) => {
                   const chain = chains.find(c => c.id === wallet.chainId);
                   if (!chain) return null;
                   const isSelected = wallet.address === connectedWallet;
@@ -587,12 +587,7 @@ export default function DApps() {
                   return (
                     <DropdownMenuItem
                       key={wallet.id}
-                      onClick={() => {
-                        if (chain.chainId !== selectedChainId) {
-                          setSelectedChainId(chain.chainId);
-                        }
-                        handleWalletSelect(wallet.address, wallet.label || `${chain.name} Wallet`, wallet.walletGroupId);
-                      }}
+                      onClick={() => handleWalletSelect(wallet.address, wallet.label || `${chain.name} Wallet`, wallet.walletGroupId)}
                       className="gap-2 cursor-pointer"
                       data-testid={`menu-wallet-${wallet.address.slice(0, 8)}`}
                     >
@@ -611,7 +606,7 @@ export default function DApps() {
                 })
               ) : (
                 <div className="p-3 text-center text-sm text-muted-foreground">
-                  No EVM wallets available
+                  No wallets for {selectedChain.name}
                 </div>
               )}
             </DropdownMenuContent>
