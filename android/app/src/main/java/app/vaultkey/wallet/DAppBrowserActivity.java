@@ -47,6 +47,7 @@ public class DAppBrowserActivity extends AppCompatActivity {
     public static final String ACTION_BROWSER_EVENT = "app.vaultkey.wallet.BROWSER_EVENT";
     public static final String ACTION_CLOSE_BROWSER = "app.vaultkey.wallet.CLOSE_BROWSER";
     public static final String ACTION_UPDATE_ACCOUNT = "app.vaultkey.wallet.UPDATE_ACCOUNT";
+    public static final String ACTION_RESUME_BROWSER = "app.vaultkey.wallet.RESUME_BROWSER";
     
     private WebView webView;
     private ProgressBar progressBar;
@@ -63,6 +64,7 @@ public class DAppBrowserActivity extends AppCompatActivity {
     private BroadcastReceiver responseReceiver;
     private BroadcastReceiver closeReceiver;
     private BroadcastReceiver updateReceiver;
+    private BroadcastReceiver resumeReceiver;
     
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -380,10 +382,29 @@ public class DAppBrowserActivity extends AppCompatActivity {
             }
         };
         
+        resumeReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                // Bring browser back to foreground after signing
+                bringToForeground();
+            }
+        };
+        
         LocalBroadcastManager lbm = LocalBroadcastManager.getInstance(this);
         lbm.registerReceiver(responseReceiver, new IntentFilter(ACTION_WEB3_RESPONSE));
         lbm.registerReceiver(closeReceiver, new IntentFilter(ACTION_CLOSE_BROWSER));
         lbm.registerReceiver(updateReceiver, new IntentFilter(ACTION_UPDATE_ACCOUNT));
+        lbm.registerReceiver(resumeReceiver, new IntentFilter(ACTION_RESUME_BROWSER));
+    }
+    
+    private void bringToForeground() {
+        try {
+            Intent intent = new Intent(this, DAppBrowserActivity.class);
+            intent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            startActivity(intent);
+        } catch (Exception e) {
+            Log.e(TAG, "Error bringing browser to foreground", e);
+        }
     }
     
     private void handleWeb3Response(int id, String result, String error) {
@@ -452,6 +473,16 @@ public class DAppBrowserActivity extends AppCompatActivity {
         intent.putExtra("method", method);
         intent.putExtra("params", params);
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+        
+        // For signing requests, minimize browser to show confirmation dialog in main app
+        if (method.equals("eth_sendTransaction") || 
+            method.equals("eth_signTransaction") ||
+            method.equals("personal_sign") ||
+            method.equals("eth_sign") ||
+            method.startsWith("eth_signTypedData")) {
+            // Move browser to back so confirmation dialog is visible
+            moveTaskToBack(true);
+        }
     }
     
     private String getRpcUrl(int chainId) {
