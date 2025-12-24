@@ -149,6 +149,20 @@ public class DAppBrowserPlugin extends Plugin {
         intent.putExtra("error", error);
         LocalBroadcastManager.getInstance(getContext()).sendBroadcast(intent);
         
+        // Automatically bring browser back to foreground after sending response
+        Intent resumeIntent = new Intent(DAppBrowserActivity.ACTION_RESUME_BROWSER);
+        LocalBroadcastManager.getInstance(getContext()).sendBroadcast(resumeIntent);
+        
+        JSObject ret = new JSObject();
+        ret.put("success", true);
+        call.resolve(ret);
+    }
+    
+    @PluginMethod
+    public void resumeBrowser(PluginCall call) {
+        Intent intent = new Intent(DAppBrowserActivity.ACTION_RESUME_BROWSER);
+        LocalBroadcastManager.getInstance(getContext()).sendBroadcast(intent);
+        
         JSObject ret = new JSObject();
         ret.put("success", true);
         call.resolve(ret);
