@@ -6,6 +6,7 @@ interface DAppBrowserPlugin {
   close(): Promise<{ success: boolean }>;
   updateAccount(options: { address: string; chainId: number }): Promise<{ success: boolean }>;
   sendResponse(options: { id: number; result?: string; error?: string }): Promise<{ success: boolean }>;
+  resumeBrowser(): Promise<{ success: boolean }>;
   addListener(event: "browserEvent", callback: (data: { url: string; loading: boolean }) => void): Promise<{ remove: () => void }>;
   addListener(event: "web3Request", callback: (data: { id: number; method: string; params: string }) => void): Promise<{ remove: () => void }>;
 }
