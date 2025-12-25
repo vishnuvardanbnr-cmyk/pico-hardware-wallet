@@ -1,16 +1,21 @@
 package app.vaultkey.wallet;
 
 import android.annotation.SuppressLint;
+import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.InputType;
 import android.util.Log;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
@@ -25,6 +30,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -48,6 +54,8 @@ public class DAppBrowserActivity extends AppCompatActivity {
     public static final String ACTION_CLOSE_BROWSER = "app.vaultkey.wallet.CLOSE_BROWSER";
     public static final String ACTION_UPDATE_ACCOUNT = "app.vaultkey.wallet.UPDATE_ACCOUNT";
     public static final String ACTION_RESUME_BROWSER = "app.vaultkey.wallet.RESUME_BROWSER";
+    public static final String ACTION_REQUEST_PIN = "app.vaultkey.wallet.REQUEST_PIN";
+    public static final String ACTION_PIN_RESPONSE = "app.vaultkey.wallet.PIN_RESPONSE";
     
     private WebView webView;
     private ProgressBar progressBar;
@@ -65,6 +73,14 @@ public class DAppBrowserActivity extends AppCompatActivity {
     private BroadcastReceiver closeReceiver;
     private BroadcastReceiver updateReceiver;
     private BroadcastReceiver resumeReceiver;
+    private BroadcastReceiver pinRequestReceiver;
+    
+    private AlertDialog currentConfirmDialog;
+    private AlertDialog currentPinDialog;
+    private int pendingRequestId = -1;
+    private String pendingMethod = "";
+    private String pendingParams = "";
+    private String enteredPin = "";
     
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -390,11 +406,190 @@ public class DAppBrowserActivity extends AppCompatActivity {
             }
         };
         
+        pinRequestReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String walletGroupId = intent.getStringExtra("walletGroupId");
+                runOnUiThread(() -> showPinDialog(walletGroupId));
+            }
+        };
+        
         LocalBroadcastManager lbm = LocalBroadcastManager.getInstance(this);
         lbm.registerReceiver(responseReceiver, new IntentFilter(ACTION_WEB3_RESPONSE));
         lbm.registerReceiver(closeReceiver, new IntentFilter(ACTION_CLOSE_BROWSER));
         lbm.registerReceiver(updateReceiver, new IntentFilter(ACTION_UPDATE_ACCOUNT));
         lbm.registerReceiver(resumeReceiver, new IntentFilter(ACTION_RESUME_BROWSER));
+        lbm.registerReceiver(pinRequestReceiver, new IntentFilter(ACTION_REQUEST_PIN));
+    }
+    
+    private void showPinDialog(String walletGroupId) {
+        if (currentPinDialog != null && currentPinDialog.isShowing()) {
+            currentPinDialog.dismiss();
+        }
+        
+        enteredPin = "";
+        
+        // Create custom PIN dialog layout
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(24), dp(20), dp(24), dp(16));
+        layout.setGravity(Gravity.CENTER_HORIZONTAL);
+        
+        // Title
+        TextView titleView = new TextView(this);
+        titleView.setText("Enter PIN");
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        titleView.setTextColor(Color.WHITE);
+        titleView.setTypeface(null, android.graphics.Typeface.BOLD);
+        titleView.setGravity(Gravity.CENTER);
+        layout.addView(titleView);
+        
+        // Subtitle
+        TextView subtitleView = new TextView(this);
+        subtitleView.setText("Enter your PIN to sign this transaction");
+        subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        subtitleView.setTextColor(Color.parseColor("#888888"));
+        subtitleView.setGravity(Gravity.CENTER);
+        subtitleView.setPadding(0, dp(8), 0, dp(24));
+        layout.addView(subtitleView);
+        
+        // PIN dots display
+        final TextView pinDotsView = new TextView(this);
+        pinDotsView.setText("");
+        pinDotsView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 32);
+        pinDotsView.setTextColor(Color.WHITE);
+        pinDotsView.setGravity(Gravity.CENTER);
+        pinDotsView.setLetterSpacing(0.5f);
+        pinDotsView.setPadding(0, 0, 0, dp(24));
+        layout.addView(pinDotsView);
+        
+        // Number pad
+        LinearLayout numPad = new LinearLayout(this);
+        numPad.setOrientation(LinearLayout.VERTICAL);
+        numPad.setGravity(Gravity.CENTER);
+        
+        String[][] buttons = {
+            {"1", "2", "3"},
+            {"4", "5", "6"},
+            {"7", "8", "9"},
+            {"", "0", "DEL"}
+        };
+        
+        for (String[] row : buttons) {
+            LinearLayout rowLayout = new LinearLayout(this);
+            rowLayout.setOrientation(LinearLayout.HORIZONTAL);
+            rowLayout.setGravity(Gravity.CENTER);
+            
+            for (String btn : row) {
+                Button numBtn = new Button(this);
+                numBtn.setText(btn);
+                numBtn.setTextColor(Color.WHITE);
+                numBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+                
+                GradientDrawable btnBg = new GradientDrawable();
+                if (btn.isEmpty()) {
+                    btnBg.setColor(Color.TRANSPARENT);
+                } else {
+                    btnBg.setColor(Color.parseColor("#333344"));
+                }
+                btnBg.setCornerRadius(dp(30));
+                numBtn.setBackground(btnBg);
+                
+                LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(dp(60), dp(60));
+                btnParams.setMargins(dp(8), dp(8), dp(8), dp(8));
+                numBtn.setLayoutParams(btnParams);
+                
+                if (!btn.isEmpty()) {
+                    numBtn.setOnClickListener(v -> {
+                        if (btn.equals("DEL")) {
+                            if (enteredPin.length() > 0) {
+                                enteredPin = enteredPin.substring(0, enteredPin.length() - 1);
+                            }
+                        } else {
+                            if (enteredPin.length() < 6) {
+                                enteredPin += btn;
+                            }
+                        }
+                        // Update dots display
+                        StringBuilder dots = new StringBuilder();
+                        for (int i = 0; i < enteredPin.length(); i++) {
+                            dots.append("\u25CF ");
+                        }
+                        pinDotsView.setText(dots.toString().trim());
+                        
+                        // Auto-submit when 4-6 digits entered
+                        if (enteredPin.length() >= 4) {
+                            // Small delay to show the last dot
+                            pinDotsView.postDelayed(() -> {
+                                if (enteredPin.length() >= 4 && enteredPin.length() <= 6) {
+                                    submitPin(walletGroupId);
+                                }
+                            }, 200);
+                        }
+                    });
+                }
+                
+                rowLayout.addView(numBtn);
+            }
+            numPad.addView(rowLayout);
+        }
+        layout.addView(numPad);
+        
+        // Cancel button
+        Button cancelBtn = new Button(this);
+        cancelBtn.setText("Cancel");
+        cancelBtn.setTextColor(Color.WHITE);
+        GradientDrawable cancelBg = new GradientDrawable();
+        cancelBg.setColor(Color.parseColor("#444444"));
+        cancelBg.setCornerRadius(dp(8));
+        cancelBtn.setBackground(cancelBg);
+        cancelBtn.setPadding(dp(48), dp(12), dp(48), dp(12));
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        cancelParams.setMargins(0, dp(16), 0, 0);
+        cancelBtn.setLayoutParams(cancelParams);
+        cancelBtn.setOnClickListener(v -> {
+            if (currentPinDialog != null) {
+                currentPinDialog.dismiss();
+                currentPinDialog = null;
+            }
+            // Send cancel PIN response
+            Intent intent = new Intent(ACTION_PIN_RESPONSE);
+            intent.putExtra("pin", "");
+            intent.putExtra("cancelled", true);
+            LocalBroadcastManager.getInstance(DAppBrowserActivity.this).sendBroadcast(intent);
+        });
+        layout.addView(cancelBtn);
+        
+        // Create and show dialog
+        AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog);
+        builder.setView(layout);
+        builder.setCancelable(false);
+        
+        currentPinDialog = builder.create();
+        if (currentPinDialog.getWindow() != null) {
+            GradientDrawable dialogBg = new GradientDrawable();
+            dialogBg.setColor(Color.parseColor("#1A1A2E"));
+            dialogBg.setCornerRadius(dp(16));
+            currentPinDialog.getWindow().setBackgroundDrawable(dialogBg);
+        }
+        currentPinDialog.show();
+    }
+    
+    private void submitPin(String walletGroupId) {
+        if (currentPinDialog != null) {
+            currentPinDialog.dismiss();
+            currentPinDialog = null;
+        }
+        
+        // Send PIN response to React app
+        Intent intent = new Intent(ACTION_PIN_RESPONSE);
+        intent.putExtra("pin", enteredPin);
+        intent.putExtra("walletGroupId", walletGroupId);
+        intent.putExtra("cancelled", false);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+        
+        enteredPin = "";
     }
     
     private void bringToForeground() {
@@ -468,27 +663,270 @@ public class DAppBrowserActivity extends AppCompatActivity {
     }
     
     private void sendWeb3Request(int id, String method, String params) {
-        Intent intent = new Intent(ACTION_WEB3_REQUEST);
-        intent.putExtra("id", id);
-        intent.putExtra("method", method);
-        intent.putExtra("params", params);
-        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
-        
-        // For signing requests, bring main activity to foreground so confirmation dialog is visible
+        // For signing requests, show confirmation dialog on top of browser
         if (method.equals("eth_sendTransaction") || 
             method.equals("eth_signTransaction") ||
             method.equals("personal_sign") ||
             method.equals("eth_sign") ||
             method.startsWith("eth_signTypedData")) {
-            // Bring MainActivity to foreground instead of moving browser to back
-            try {
-                Intent mainIntent = new Intent(this, MainActivity.class);
-                mainIntent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                startActivity(mainIntent);
-            } catch (Exception e) {
-                Log.e(TAG, "Error bringing main activity to front", e);
-            }
+            // Store pending request info
+            pendingRequestId = id;
+            pendingMethod = method;
+            pendingParams = params;
+            
+            // Show confirmation dialog on UI thread
+            runOnUiThread(() -> showConfirmationDialog(id, method, params));
+        } else {
+            // For non-signing requests, send directly to React app
+            Intent intent = new Intent(ACTION_WEB3_REQUEST);
+            intent.putExtra("id", id);
+            intent.putExtra("method", method);
+            intent.putExtra("params", params);
+            LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
         }
+    }
+    
+    private void showConfirmationDialog(int id, String method, String params) {
+        if (currentConfirmDialog != null && currentConfirmDialog.isShowing()) {
+            currentConfirmDialog.dismiss();
+        }
+        
+        // Parse transaction details
+        String title = "Confirm Transaction";
+        String details = "";
+        
+        try {
+            org.json.JSONArray paramsArray = new org.json.JSONArray(params);
+            
+            if (method.equals("eth_sendTransaction") || method.equals("eth_signTransaction")) {
+                title = "Confirm Transaction";
+                if (paramsArray.length() > 0) {
+                    org.json.JSONObject tx = paramsArray.getJSONObject(0);
+                    String to = tx.optString("to", "Contract Creation");
+                    String value = tx.optString("value", "0x0");
+                    String data = tx.optString("data", "0x");
+                    
+                    // Convert value from hex to decimal
+                    double ethValue = 0;
+                    if (value.startsWith("0x") && value.length() > 2) {
+                        try {
+                            ethValue = Long.parseLong(value.substring(2), 16) / 1e18;
+                        } catch (Exception e) {}
+                    }
+                    
+                    details = "To: " + shortenAddress(to) + "\n\n" +
+                              "Value: " + String.format("%.6f", ethValue) + " " + getChainSymbol() + "\n\n" +
+                              (data.length() > 2 ? "Contract Interaction" : "Simple Transfer");
+                }
+            } else if (method.equals("personal_sign") || method.equals("eth_sign")) {
+                title = "Sign Message";
+                if (paramsArray.length() > 0) {
+                    String message = paramsArray.getString(0);
+                    if (message.startsWith("0x")) {
+                        try {
+                            byte[] bytes = hexStringToByteArray(message.substring(2));
+                            message = new String(bytes, "UTF-8");
+                        } catch (Exception e) {}
+                    }
+                    details = "Message:\n" + (message.length() > 200 ? message.substring(0, 200) + "..." : message);
+                }
+            } else if (method.contains("signTypedData")) {
+                title = "Sign Typed Data";
+                if (paramsArray.length() > 1) {
+                    try {
+                        org.json.JSONObject typedData = new org.json.JSONObject(paramsArray.getString(1));
+                        String domain = typedData.optJSONObject("domain") != null ? 
+                            typedData.getJSONObject("domain").optString("name", "Unknown DApp") : "Unknown DApp";
+                        String primaryType = typedData.optString("primaryType", "Unknown");
+                        details = "Domain: " + domain + "\n\nType: " + primaryType;
+                    } catch (Exception e) {
+                        details = "Typed data signature request";
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error parsing params", e);
+            details = "Transaction request";
+        }
+        
+        // Create custom dialog layout
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(24), dp(20), dp(24), dp(16));
+        
+        // Title
+        TextView titleView = new TextView(this);
+        titleView.setText(title);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        titleView.setTextColor(Color.WHITE);
+        titleView.setTypeface(null, android.graphics.Typeface.BOLD);
+        layout.addView(titleView);
+        
+        // Wallet info
+        TextView walletView = new TextView(this);
+        walletView.setText("Wallet: " + shortenAddress(currentAddress));
+        walletView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        walletView.setTextColor(Color.parseColor("#888888"));
+        walletView.setPadding(0, dp(8), 0, dp(16));
+        layout.addView(walletView);
+        
+        // Details card
+        LinearLayout detailsCard = new LinearLayout(this);
+        detailsCard.setOrientation(LinearLayout.VERTICAL);
+        detailsCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        GradientDrawable cardBg = new GradientDrawable();
+        cardBg.setColor(Color.parseColor("#2A2A3E"));
+        cardBg.setCornerRadius(dp(12));
+        detailsCard.setBackground(cardBg);
+        
+        TextView detailsView = new TextView(this);
+        detailsView.setText(details);
+        detailsView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        detailsView.setTextColor(Color.parseColor("#CCCCCC"));
+        detailsCard.addView(detailsView);
+        layout.addView(detailsCard);
+        
+        // Chain info
+        TextView chainView = new TextView(this);
+        chainView.setText("Network: " + getChainName());
+        chainView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        chainView.setTextColor(Color.parseColor("#666666"));
+        chainView.setPadding(0, dp(12), 0, dp(16));
+        layout.addView(chainView);
+        
+        // Buttons container
+        LinearLayout buttonContainer = new LinearLayout(this);
+        buttonContainer.setOrientation(LinearLayout.HORIZONTAL);
+        buttonContainer.setGravity(Gravity.END);
+        
+        // Reject button
+        Button rejectBtn = new Button(this);
+        rejectBtn.setText("Reject");
+        rejectBtn.setTextColor(Color.WHITE);
+        GradientDrawable rejectBg = new GradientDrawable();
+        rejectBg.setColor(Color.parseColor("#444444"));
+        rejectBg.setCornerRadius(dp(8));
+        rejectBtn.setBackground(rejectBg);
+        rejectBtn.setPadding(dp(24), dp(12), dp(24), dp(12));
+        LinearLayout.LayoutParams rejectParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rejectParams.setMargins(0, 0, dp(12), 0);
+        rejectBtn.setLayoutParams(rejectParams);
+        rejectBtn.setOnClickListener(v -> {
+            handleDialogReject(id);
+        });
+        buttonContainer.addView(rejectBtn);
+        
+        // Confirm button
+        Button confirmBtn = new Button(this);
+        confirmBtn.setText("Confirm");
+        confirmBtn.setTextColor(Color.WHITE);
+        GradientDrawable confirmBg = new GradientDrawable();
+        confirmBg.setColor(Color.parseColor("#4A90D9"));
+        confirmBg.setCornerRadius(dp(8));
+        confirmBtn.setBackground(confirmBg);
+        confirmBtn.setPadding(dp(24), dp(12), dp(24), dp(12));
+        confirmBtn.setOnClickListener(v -> {
+            handleDialogConfirm(id, method, params);
+        });
+        buttonContainer.addView(confirmBtn);
+        
+        layout.addView(buttonContainer);
+        
+        // Create and show dialog
+        AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog);
+        builder.setView(layout);
+        builder.setCancelable(false);
+        
+        currentConfirmDialog = builder.create();
+        if (currentConfirmDialog.getWindow() != null) {
+            currentConfirmDialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+            GradientDrawable dialogBg = new GradientDrawable();
+            dialogBg.setColor(Color.parseColor("#1A1A2E"));
+            dialogBg.setCornerRadius(dp(16));
+            currentConfirmDialog.getWindow().setBackgroundDrawable(dialogBg);
+        }
+        currentConfirmDialog.show();
+    }
+    
+    private void handleDialogReject(int id) {
+        if (currentConfirmDialog != null) {
+            currentConfirmDialog.dismiss();
+            currentConfirmDialog = null;
+        }
+        
+        // Send rejection response to WebView
+        handleWeb3Response(id, null, "User rejected the request");
+        
+        pendingRequestId = -1;
+        pendingMethod = "";
+        pendingParams = "";
+    }
+    
+    private void handleDialogConfirm(int id, String method, String params) {
+        if (currentConfirmDialog != null) {
+            currentConfirmDialog.dismiss();
+            currentConfirmDialog = null;
+        }
+        
+        // Send request to React app for signing (it will handle PIN verification)
+        Intent intent = new Intent(ACTION_WEB3_REQUEST);
+        intent.putExtra("id", id);
+        intent.putExtra("method", method);
+        intent.putExtra("params", params);
+        intent.putExtra("confirmed", true);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+        
+        pendingRequestId = -1;
+        pendingMethod = "";
+        pendingParams = "";
+    }
+    
+    private int dp(int value) {
+        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics());
+    }
+    
+    private String shortenAddress(String address) {
+        if (address == null || address.length() < 10) return address;
+        return address.substring(0, 6) + "..." + address.substring(address.length() - 4);
+    }
+    
+    private String getChainSymbol() {
+        switch (currentChainId) {
+            case 1: return "ETH";
+            case 56: return "BNB";
+            case 137: return "MATIC";
+            case 43114: return "AVAX";
+            case 42161: return "ETH";
+            case 10: return "ETH";
+            case 250: return "FTM";
+            case 25: return "CRO";
+            default: return "ETH";
+        }
+    }
+    
+    private String getChainName() {
+        switch (currentChainId) {
+            case 1: return "Ethereum";
+            case 56: return "BSC";
+            case 137: return "Polygon";
+            case 43114: return "Avalanche";
+            case 42161: return "Arbitrum";
+            case 10: return "Optimism";
+            case 250: return "Fantom";
+            case 25: return "Cronos";
+            default: return "Chain " + currentChainId;
+        }
+    }
+    
+    private byte[] hexStringToByteArray(String s) {
+        int len = s.length();
+        byte[] data = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)
+                                 + Character.digit(s.charAt(i+1), 16));
+        }
+        return data;
     }
     
     private String getRpcUrl(int chainId) {
