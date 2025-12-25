@@ -108,41 +108,45 @@ export default function DApps() {
 
   // Handle sign request from DApp - native dialog shows confirmation, we handle signing
   const handleSignRequest = useCallback(async (method: string, params: any[], confirmed: boolean): Promise<string | null> => {
-    console.log("[DApps] handleSignRequest:", method, "confirmed:", confirmed);
+    console.log("[DApps] handleSignRequest:", method, "confirmed:", confirmed, "walletMode:", walletMode);
     
     // Only proceed if user confirmed in native dialog
     if (!confirmed) {
       return null; // User rejected in native dialog
     }
     
-    // Check if wallet group needs PIN
-    if (walletMode === "soft_wallet") {
-      const groupUnlocked = isWalletGroupUnlocked(connectedWalletGroupId);
-      if (!groupUnlocked) {
-        // Request PIN from native dialog
-        console.log("[DApps] Wallet locked, requesting PIN from native dialog");
-        const pin = await nativeDAppBrowser.requestPin(connectedWalletGroupId || "");
-        
-        if (!pin) {
-          console.log("[DApps] PIN entry cancelled");
+    // For soft wallet, ALWAYS require PIN for each transaction (one-shot security)
+    // Lock the wallet first to ensure PIN is always required
+    if (walletMode === "soft_wallet" && connectedWalletGroupId) {
+      console.log("[DApps] Locking wallet for one-shot PIN verification");
+      lockWalletGroup(connectedWalletGroupId);
+      
+      // Request PIN from native dialog
+      console.log("[DApps] Requesting PIN from native dialog for:", connectedWalletGroupId);
+      const pin = await nativeDAppBrowser.requestPin(connectedWalletGroupId);
+      
+      if (!pin) {
+        console.log("[DApps] PIN entry cancelled");
+        return null;
+      }
+      
+      // Verify and unlock with PIN
+      try {
+        console.log("[DApps] Verifying PIN...");
+        const success = await unlockWalletGroup(connectedWalletGroupId, pin);
+        if (!success) {
+          console.log("[DApps] PIN verification failed");
+          toast({
+            title: "Invalid PIN",
+            description: "The PIN you entered is incorrect",
+            variant: "destructive",
+          });
           return null;
         }
-        
-        // Verify and unlock with PIN
-        try {
-          const success = await unlockWalletGroup(connectedWalletGroupId || "", pin);
-          if (!success) {
-            toast({
-              title: "Invalid PIN",
-              description: "The PIN you entered is incorrect",
-              variant: "destructive",
-            });
-            return null;
-          }
-        } catch (e: any) {
-          console.error("[DApps] PIN verification error:", e);
-          return null;
-        }
+        console.log("[DApps] PIN verified successfully");
+      } catch (e: any) {
+        console.error("[DApps] PIN verification error:", e);
+        return null;
       }
     }
     
