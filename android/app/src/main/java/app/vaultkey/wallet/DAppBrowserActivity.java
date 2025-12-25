@@ -32,6 +32,8 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.ImageView;
+import android.graphics.Typeface;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
@@ -40,6 +42,8 @@ import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
 import java.util.HashSet;
+import java.math.BigInteger;
+import java.math.BigDecimal;
 
 public class DAppBrowserActivity extends AppCompatActivity {
     private static final String TAG = "DAppBrowserActivity";
@@ -401,7 +405,6 @@ public class DAppBrowserActivity extends AppCompatActivity {
         resumeReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
-                // Bring browser back to foreground after signing
                 bringToForeground();
             }
         };
@@ -410,6 +413,7 @@ public class DAppBrowserActivity extends AppCompatActivity {
             @Override
             public void onReceive(Context context, Intent intent) {
                 String walletGroupId = intent.getStringExtra("walletGroupId");
+                Log.d(TAG, "PIN request received for wallet group: " + walletGroupId);
                 runOnUiThread(() -> showPinDialog(walletGroupId));
             }
         };
@@ -423,28 +427,27 @@ public class DAppBrowserActivity extends AppCompatActivity {
     }
     
     private void showPinDialog(String walletGroupId) {
+        Log.d(TAG, "showPinDialog called");
+        
         if (currentPinDialog != null && currentPinDialog.isShowing()) {
             currentPinDialog.dismiss();
         }
         
         enteredPin = "";
         
-        // Create custom PIN dialog layout
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(24), dp(20), dp(24), dp(16));
+        layout.setPadding(dp(24), dp(24), dp(24), dp(20));
         layout.setGravity(Gravity.CENTER_HORIZONTAL);
         
-        // Title
         TextView titleView = new TextView(this);
         titleView.setText("Enter PIN");
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
         titleView.setTextColor(Color.WHITE);
-        titleView.setTypeface(null, android.graphics.Typeface.BOLD);
+        titleView.setTypeface(null, Typeface.BOLD);
         titleView.setGravity(Gravity.CENTER);
         layout.addView(titleView);
         
-        // Subtitle
         TextView subtitleView = new TextView(this);
         subtitleView.setText("Enter your PIN to sign this transaction");
         subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
@@ -453,17 +456,15 @@ public class DAppBrowserActivity extends AppCompatActivity {
         subtitleView.setPadding(0, dp(8), 0, dp(24));
         layout.addView(subtitleView);
         
-        // PIN dots display
         final TextView pinDotsView = new TextView(this);
-        pinDotsView.setText("");
-        pinDotsView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 32);
+        pinDotsView.setText("\u25CB \u25CB \u25CB \u25CB");
+        pinDotsView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
         pinDotsView.setTextColor(Color.WHITE);
         pinDotsView.setGravity(Gravity.CENTER);
-        pinDotsView.setLetterSpacing(0.5f);
+        pinDotsView.setLetterSpacing(0.3f);
         pinDotsView.setPadding(0, 0, 0, dp(24));
         layout.addView(pinDotsView);
         
-        // Number pad
         LinearLayout numPad = new LinearLayout(this);
         numPad.setOrientation(LinearLayout.VERTICAL);
         numPad.setGravity(Gravity.CENTER);
@@ -472,7 +473,7 @@ public class DAppBrowserActivity extends AppCompatActivity {
             {"1", "2", "3"},
             {"4", "5", "6"},
             {"7", "8", "9"},
-            {"", "0", "DEL"}
+            {"", "0", "\u232B"}
         };
         
         for (String[] row : buttons) {
@@ -484,24 +485,25 @@ public class DAppBrowserActivity extends AppCompatActivity {
                 Button numBtn = new Button(this);
                 numBtn.setText(btn);
                 numBtn.setTextColor(Color.WHITE);
-                numBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+                numBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+                numBtn.setAllCaps(false);
                 
                 GradientDrawable btnBg = new GradientDrawable();
                 if (btn.isEmpty()) {
                     btnBg.setColor(Color.TRANSPARENT);
                 } else {
-                    btnBg.setColor(Color.parseColor("#333344"));
+                    btnBg.setColor(Color.parseColor("#333355"));
                 }
-                btnBg.setCornerRadius(dp(30));
+                btnBg.setCornerRadius(dp(35));
                 numBtn.setBackground(btnBg);
                 
-                LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(dp(60), dp(60));
-                btnParams.setMargins(dp(8), dp(8), dp(8), dp(8));
+                LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(dp(70), dp(70));
+                btnParams.setMargins(dp(6), dp(6), dp(6), dp(6));
                 numBtn.setLayoutParams(btnParams);
                 
                 if (!btn.isEmpty()) {
                     numBtn.setOnClickListener(v -> {
-                        if (btn.equals("DEL")) {
+                        if (btn.equals("\u232B")) {
                             if (enteredPin.length() > 0) {
                                 enteredPin = enteredPin.substring(0, enteredPin.length() - 1);
                             }
@@ -510,16 +512,9 @@ public class DAppBrowserActivity extends AppCompatActivity {
                                 enteredPin += btn;
                             }
                         }
-                        // Update dots display
-                        StringBuilder dots = new StringBuilder();
-                        for (int i = 0; i < enteredPin.length(); i++) {
-                            dots.append("\u25CF ");
-                        }
-                        pinDotsView.setText(dots.toString().trim());
+                        updatePinDots(pinDotsView);
                         
-                        // Auto-submit when 4-6 digits entered
                         if (enteredPin.length() >= 4) {
-                            // Small delay to show the last dot
                             pinDotsView.postDelayed(() -> {
                                 if (enteredPin.length() >= 4 && enteredPin.length() <= 6) {
                                     submitPin(walletGroupId);
@@ -535,25 +530,24 @@ public class DAppBrowserActivity extends AppCompatActivity {
         }
         layout.addView(numPad);
         
-        // Cancel button
         Button cancelBtn = new Button(this);
         cancelBtn.setText("Cancel");
         cancelBtn.setTextColor(Color.WHITE);
+        cancelBtn.setAllCaps(false);
         GradientDrawable cancelBg = new GradientDrawable();
-        cancelBg.setColor(Color.parseColor("#444444"));
+        cancelBg.setColor(Color.parseColor("#555555"));
         cancelBg.setCornerRadius(dp(8));
         cancelBtn.setBackground(cancelBg);
-        cancelBtn.setPadding(dp(48), dp(12), dp(48), dp(12));
+        cancelBtn.setPadding(dp(48), dp(14), dp(48), dp(14));
         LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        cancelParams.setMargins(0, dp(16), 0, 0);
+        cancelParams.setMargins(0, dp(20), 0, 0);
         cancelBtn.setLayoutParams(cancelParams);
         cancelBtn.setOnClickListener(v -> {
             if (currentPinDialog != null) {
                 currentPinDialog.dismiss();
                 currentPinDialog = null;
             }
-            // Send cancel PIN response
             Intent intent = new Intent(ACTION_PIN_RESPONSE);
             intent.putExtra("pin", "");
             intent.putExtra("cancelled", true);
@@ -561,7 +555,6 @@ public class DAppBrowserActivity extends AppCompatActivity {
         });
         layout.addView(cancelBtn);
         
-        // Create and show dialog
         AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog);
         builder.setView(layout);
         builder.setCancelable(false);
@@ -570,19 +563,37 @@ public class DAppBrowserActivity extends AppCompatActivity {
         if (currentPinDialog.getWindow() != null) {
             GradientDrawable dialogBg = new GradientDrawable();
             dialogBg.setColor(Color.parseColor("#1A1A2E"));
-            dialogBg.setCornerRadius(dp(16));
+            dialogBg.setCornerRadius(dp(20));
             currentPinDialog.getWindow().setBackgroundDrawable(dialogBg);
         }
         currentPinDialog.show();
+        Log.d(TAG, "PIN dialog shown");
+    }
+    
+    private void updatePinDots(TextView pinDotsView) {
+        StringBuilder dots = new StringBuilder();
+        for (int i = 0; i < 4; i++) {
+            if (i < enteredPin.length()) {
+                dots.append("\u25CF ");
+            } else {
+                dots.append("\u25CB ");
+            }
+        }
+        if (enteredPin.length() > 4) {
+            for (int i = 4; i < enteredPin.length(); i++) {
+                dots.append("\u25CF ");
+            }
+        }
+        pinDotsView.setText(dots.toString().trim());
     }
     
     private void submitPin(String walletGroupId) {
+        Log.d(TAG, "Submitting PIN");
         if (currentPinDialog != null) {
             currentPinDialog.dismiss();
             currentPinDialog = null;
         }
         
-        // Send PIN response to React app
         Intent intent = new Intent(ACTION_PIN_RESPONSE);
         intent.putExtra("pin", enteredPin);
         intent.putExtra("walletGroupId", walletGroupId);
@@ -663,21 +674,17 @@ public class DAppBrowserActivity extends AppCompatActivity {
     }
     
     private void sendWeb3Request(int id, String method, String params) {
-        // For signing requests, show confirmation dialog on top of browser
         if (method.equals("eth_sendTransaction") || 
             method.equals("eth_signTransaction") ||
             method.equals("personal_sign") ||
             method.equals("eth_sign") ||
             method.startsWith("eth_signTypedData")) {
-            // Store pending request info
             pendingRequestId = id;
             pendingMethod = method;
             pendingParams = params;
             
-            // Show confirmation dialog on UI thread
             runOnUiThread(() -> showConfirmationDialog(id, method, params));
         } else {
-            // For non-signing requests, send directly to React app
             Intent intent = new Intent(ACTION_WEB3_REQUEST);
             intent.putExtra("id", id);
             intent.putExtra("method", method);
@@ -691,151 +698,220 @@ public class DAppBrowserActivity extends AppCompatActivity {
             currentConfirmDialog.dismiss();
         }
         
-        // Parse transaction details
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+        
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(20), dp(20), dp(20), dp(16));
+        scrollView.addView(layout);
+        
         String title = "Confirm Transaction";
-        String details = "";
+        String actionType = "Contract Interaction";
+        String toAddress = "";
+        String valueAmount = "0";
+        String gasEstimate = "";
+        String dataHex = "";
+        String functionName = "";
+        boolean hasData = false;
         
         try {
             org.json.JSONArray paramsArray = new org.json.JSONArray(params);
             
             if (method.equals("eth_sendTransaction") || method.equals("eth_signTransaction")) {
-                title = "Confirm Transaction";
                 if (paramsArray.length() > 0) {
                     org.json.JSONObject tx = paramsArray.getJSONObject(0);
-                    String to = tx.optString("to", "Contract Creation");
-                    String value = tx.optString("value", "0x0");
-                    String data = tx.optString("data", "0x");
+                    toAddress = tx.optString("to", "");
+                    String valueHex = tx.optString("value", "0x0");
+                    dataHex = tx.optString("data", "0x");
+                    String gasHex = tx.optString("gas", tx.optString("gasLimit", "0x0"));
                     
-                    // Convert value from hex to decimal
-                    double ethValue = 0;
-                    if (value.startsWith("0x") && value.length() > 2) {
-                        try {
-                            ethValue = Long.parseLong(value.substring(2), 16) / 1e18;
-                        } catch (Exception e) {}
+                    valueAmount = formatWeiToEth(valueHex);
+                    gasEstimate = formatGas(gasHex);
+                    hasData = dataHex.length() > 2;
+                    
+                    if (toAddress.isEmpty()) {
+                        actionType = "Contract Deployment";
+                        title = "Deploy Contract";
+                    } else if (!hasData) {
+                        actionType = "Send " + getChainSymbol();
+                        title = "Send " + getChainSymbol();
+                    } else {
+                        functionName = decodeFunction(dataHex);
+                        if (functionName.startsWith("approve")) {
+                            actionType = "Token Approval";
+                            title = "Approve Token";
+                        } else if (functionName.startsWith("transfer")) {
+                            actionType = "Token Transfer";
+                            title = "Transfer Token";
+                        } else if (functionName.contains("swap") || functionName.contains("Swap")) {
+                            actionType = "Swap";
+                            title = "Swap Tokens";
+                        } else {
+                            actionType = "Contract Interaction";
+                            title = "Confirm Transaction";
+                        }
                     }
-                    
-                    details = "To: " + shortenAddress(to) + "\n\n" +
-                              "Value: " + String.format("%.6f", ethValue) + " " + getChainSymbol() + "\n\n" +
-                              (data.length() > 2 ? "Contract Interaction" : "Simple Transfer");
                 }
             } else if (method.equals("personal_sign") || method.equals("eth_sign")) {
                 title = "Sign Message";
+                actionType = "Message Signature";
                 if (paramsArray.length() > 0) {
                     String message = paramsArray.getString(0);
                     if (message.startsWith("0x")) {
                         try {
                             byte[] bytes = hexStringToByteArray(message.substring(2));
-                            message = new String(bytes, "UTF-8");
-                        } catch (Exception e) {}
+                            dataHex = new String(bytes, "UTF-8");
+                        } catch (Exception e) {
+                            dataHex = message;
+                        }
+                    } else {
+                        dataHex = message;
                     }
-                    details = "Message:\n" + (message.length() > 200 ? message.substring(0, 200) + "..." : message);
                 }
             } else if (method.contains("signTypedData")) {
                 title = "Sign Typed Data";
+                actionType = "Typed Data Signature";
                 if (paramsArray.length() > 1) {
                     try {
                         org.json.JSONObject typedData = new org.json.JSONObject(paramsArray.getString(1));
                         String domain = typedData.optJSONObject("domain") != null ? 
-                            typedData.getJSONObject("domain").optString("name", "Unknown DApp") : "Unknown DApp";
-                        String primaryType = typedData.optString("primaryType", "Unknown");
-                        details = "Domain: " + domain + "\n\nType: " + primaryType;
+                            typedData.getJSONObject("domain").optString("name", "DApp") : "DApp";
+                        String primaryType = typedData.optString("primaryType", "");
+                        dataHex = "Domain: " + domain + "\nType: " + primaryType;
                     } catch (Exception e) {
-                        details = "Typed data signature request";
+                        dataHex = "Typed data request";
                     }
                 }
             }
         } catch (Exception e) {
             Log.e(TAG, "Error parsing params", e);
-            details = "Transaction request";
         }
         
-        // Create custom dialog layout
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(24), dp(20), dp(24), dp(16));
-        
-        // Title
         TextView titleView = new TextView(this);
         titleView.setText(title);
         titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
         titleView.setTextColor(Color.WHITE);
-        titleView.setTypeface(null, android.graphics.Typeface.BOLD);
+        titleView.setTypeface(null, Typeface.BOLD);
+        titleView.setGravity(Gravity.CENTER);
         layout.addView(titleView);
         
-        // Wallet info
-        TextView walletView = new TextView(this);
-        walletView.setText("Wallet: " + shortenAddress(currentAddress));
-        walletView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        walletView.setTextColor(Color.parseColor("#888888"));
-        walletView.setPadding(0, dp(8), 0, dp(16));
-        layout.addView(walletView);
+        TextView typeView = new TextView(this);
+        typeView.setText(actionType);
+        typeView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        typeView.setTextColor(Color.parseColor("#4A90D9"));
+        typeView.setGravity(Gravity.CENTER);
+        typeView.setPadding(0, dp(4), 0, dp(16));
+        layout.addView(typeView);
         
-        // Details card
-        LinearLayout detailsCard = new LinearLayout(this);
-        detailsCard.setOrientation(LinearLayout.VERTICAL);
-        detailsCard.setPadding(dp(16), dp(16), dp(16), dp(16));
-        GradientDrawable cardBg = new GradientDrawable();
-        cardBg.setColor(Color.parseColor("#2A2A3E"));
-        cardBg.setCornerRadius(dp(12));
-        detailsCard.setBackground(cardBg);
+        LinearLayout networkCard = createInfoCard("Network", getChainName(), getChainColor());
+        layout.addView(networkCard);
         
-        TextView detailsView = new TextView(this);
-        detailsView.setText(details);
-        detailsView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        detailsView.setTextColor(Color.parseColor("#CCCCCC"));
-        detailsCard.addView(detailsView);
-        layout.addView(detailsCard);
+        if (!method.contains("sign") || method.contains("Transaction")) {
+            LinearLayout walletCard = createInfoCard("From", shortenAddress(currentAddress), "#FFFFFF");
+            layout.addView(walletCard);
+            
+            if (!toAddress.isEmpty()) {
+                LinearLayout toCard = createInfoCard("To", shortenAddress(toAddress), "#FFFFFF");
+                layout.addView(toCard);
+            }
+            
+            if (!valueAmount.equals("0") && !valueAmount.equals("0.000000")) {
+                LinearLayout valueCard = createInfoCard("Amount", valueAmount + " " + getChainSymbol(), "#FFD700");
+                layout.addView(valueCard);
+            }
+            
+            if (!gasEstimate.isEmpty() && !gasEstimate.equals("0")) {
+                LinearLayout gasCard = createInfoCard("Est. Gas", gasEstimate, "#888888");
+                layout.addView(gasCard);
+            }
+            
+            if (hasData && !functionName.isEmpty()) {
+                LinearLayout funcCard = createInfoCard("Function", functionName, "#AAAAAA");
+                layout.addView(funcCard);
+            }
+        } else {
+            if (dataHex.length() > 0) {
+                LinearLayout msgCard = new LinearLayout(this);
+                msgCard.setOrientation(LinearLayout.VERTICAL);
+                msgCard.setPadding(dp(14), dp(12), dp(14), dp(12));
+                LinearLayout.LayoutParams msgParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                msgParams.setMargins(0, dp(8), 0, dp(8));
+                msgCard.setLayoutParams(msgParams);
+                
+                GradientDrawable msgBg = new GradientDrawable();
+                msgBg.setColor(Color.parseColor("#2A2A3E"));
+                msgBg.setCornerRadius(dp(10));
+                msgCard.setBackground(msgBg);
+                
+                TextView msgLabel = new TextView(this);
+                msgLabel.setText("Message");
+                msgLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                msgLabel.setTextColor(Color.parseColor("#888888"));
+                msgCard.addView(msgLabel);
+                
+                TextView msgValue = new TextView(this);
+                msgValue.setText(dataHex.length() > 300 ? dataHex.substring(0, 300) + "..." : dataHex);
+                msgValue.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                msgValue.setTextColor(Color.parseColor("#CCCCCC"));
+                msgValue.setPadding(0, dp(4), 0, 0);
+                msgCard.addView(msgValue);
+                
+                layout.addView(msgCard);
+            }
+        }
         
-        // Chain info
-        TextView chainView = new TextView(this);
-        chainView.setText("Network: " + getChainName());
-        chainView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        chainView.setTextColor(Color.parseColor("#666666"));
-        chainView.setPadding(0, dp(12), 0, dp(16));
-        layout.addView(chainView);
+        View spacer = new View(this);
+        spacer.setLayoutParams(new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(16)));
+        layout.addView(spacer);
         
-        // Buttons container
         LinearLayout buttonContainer = new LinearLayout(this);
         buttonContainer.setOrientation(LinearLayout.HORIZONTAL);
-        buttonContainer.setGravity(Gravity.END);
+        buttonContainer.setGravity(Gravity.CENTER);
+        buttonContainer.setPadding(0, dp(8), 0, 0);
         
-        // Reject button
         Button rejectBtn = new Button(this);
-        rejectBtn.setText("Reject");
+        rejectBtn.setText("REJECT");
         rejectBtn.setTextColor(Color.WHITE);
+        rejectBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        rejectBtn.setTypeface(null, Typeface.BOLD);
+        rejectBtn.setAllCaps(false);
         GradientDrawable rejectBg = new GradientDrawable();
-        rejectBg.setColor(Color.parseColor("#444444"));
-        rejectBg.setCornerRadius(dp(8));
+        rejectBg.setColor(Color.parseColor("#3A3A4E"));
+        rejectBg.setCornerRadius(dp(25));
         rejectBtn.setBackground(rejectBg);
-        rejectBtn.setPadding(dp(24), dp(12), dp(24), dp(12));
+        rejectBtn.setPadding(dp(32), dp(14), dp(32), dp(14));
         LinearLayout.LayoutParams rejectParams = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        rejectParams.setMargins(0, 0, dp(12), 0);
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        rejectParams.setMargins(0, 0, dp(8), 0);
         rejectBtn.setLayoutParams(rejectParams);
-        rejectBtn.setOnClickListener(v -> {
-            handleDialogReject(id);
-        });
+        rejectBtn.setOnClickListener(v -> handleDialogReject(id));
         buttonContainer.addView(rejectBtn);
         
-        // Confirm button
         Button confirmBtn = new Button(this);
-        confirmBtn.setText("Confirm");
+        confirmBtn.setText("CONFIRM");
         confirmBtn.setTextColor(Color.WHITE);
+        confirmBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        confirmBtn.setTypeface(null, Typeface.BOLD);
+        confirmBtn.setAllCaps(false);
         GradientDrawable confirmBg = new GradientDrawable();
-        confirmBg.setColor(Color.parseColor("#4A90D9"));
-        confirmBg.setCornerRadius(dp(8));
+        confirmBg.setColor(Color.parseColor("#4CAF50"));
+        confirmBg.setCornerRadius(dp(25));
         confirmBtn.setBackground(confirmBg);
-        confirmBtn.setPadding(dp(24), dp(12), dp(24), dp(12));
-        confirmBtn.setOnClickListener(v -> {
-            handleDialogConfirm(id, method, params);
-        });
+        confirmBtn.setPadding(dp(32), dp(14), dp(32), dp(14));
+        LinearLayout.LayoutParams confirmParams = new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        confirmParams.setMargins(dp(8), 0, 0, 0);
+        confirmBtn.setLayoutParams(confirmParams);
+        confirmBtn.setOnClickListener(v -> handleDialogConfirm(id, method, params));
         buttonContainer.addView(confirmBtn);
         
         layout.addView(buttonContainer);
         
-        // Create and show dialog
         AlertDialog.Builder builder = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog);
-        builder.setView(layout);
+        builder.setView(scrollView);
         builder.setCancelable(false);
         
         currentConfirmDialog = builder.create();
@@ -843,10 +919,102 @@ public class DAppBrowserActivity extends AppCompatActivity {
             currentConfirmDialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
             GradientDrawable dialogBg = new GradientDrawable();
             dialogBg.setColor(Color.parseColor("#1A1A2E"));
-            dialogBg.setCornerRadius(dp(16));
+            dialogBg.setCornerRadius(dp(20));
             currentConfirmDialog.getWindow().setBackgroundDrawable(dialogBg);
         }
         currentConfirmDialog.show();
+    }
+    
+    private LinearLayout createInfoCard(String label, String value, String valueColor) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setPadding(dp(14), dp(12), dp(14), dp(12));
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        cardParams.setMargins(0, dp(4), 0, dp(4));
+        card.setLayoutParams(cardParams);
+        
+        GradientDrawable cardBg = new GradientDrawable();
+        cardBg.setColor(Color.parseColor("#2A2A3E"));
+        cardBg.setCornerRadius(dp(10));
+        card.setBackground(cardBg);
+        
+        TextView labelView = new TextView(this);
+        labelView.setText(label);
+        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        labelView.setTextColor(Color.parseColor("#888888"));
+        labelView.setLayoutParams(new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        card.addView(labelView);
+        
+        TextView valueView = new TextView(this);
+        valueView.setText(value);
+        valueView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        valueView.setTextColor(Color.parseColor(valueColor));
+        valueView.setTypeface(null, Typeface.BOLD);
+        card.addView(valueView);
+        
+        return card;
+    }
+    
+    private String formatWeiToEth(String hexValue) {
+        try {
+            if (hexValue == null || hexValue.isEmpty() || hexValue.equals("0x") || hexValue.equals("0x0")) {
+                return "0";
+            }
+            String hex = hexValue.startsWith("0x") ? hexValue.substring(2) : hexValue;
+            if (hex.isEmpty()) return "0";
+            BigInteger wei = new BigInteger(hex, 16);
+            BigDecimal eth = new BigDecimal(wei).divide(new BigDecimal("1000000000000000000"));
+            if (eth.compareTo(BigDecimal.ZERO) == 0) return "0";
+            return eth.stripTrailingZeros().toPlainString();
+        } catch (Exception e) {
+            return "0";
+        }
+    }
+    
+    private String formatGas(String hexValue) {
+        try {
+            if (hexValue == null || hexValue.isEmpty() || hexValue.equals("0x") || hexValue.equals("0x0")) {
+                return "";
+            }
+            String hex = hexValue.startsWith("0x") ? hexValue.substring(2) : hexValue;
+            if (hex.isEmpty()) return "";
+            long gas = Long.parseLong(hex, 16);
+            return String.format("%,d", gas);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+    
+    private String decodeFunction(String data) {
+        if (data == null || data.length() < 10) return "";
+        String selector = data.substring(0, 10).toLowerCase();
+        
+        switch (selector) {
+            case "0xa9059cbb": return "transfer(address,uint256)";
+            case "0x23b872dd": return "transferFrom(address,address,uint256)";
+            case "0x095ea7b3": return "approve(address,uint256)";
+            case "0x38ed1739": return "swapExactTokensForTokens";
+            case "0x7ff36ab5": return "swapExactETHForTokens";
+            case "0x18cbafe5": return "swapExactTokensForETH";
+            case "0x5c11d795": return "swapExactTokensForTokensSupportingFeeOnTransferTokens";
+            case "0xfb3bdb41": return "swapETHForExactTokens";
+            case "0x4a25d94a": return "swapTokensForExactETH";
+            case "0x2e1a7d4d": return "withdraw(uint256)";
+            case "0xd0e30db0": return "deposit()";
+            case "0xa0712d68": return "mint(uint256)";
+            case "0x40c10f19": return "mint(address,uint256)";
+            case "0x42842e0e": return "safeTransferFrom(address,address,uint256)";
+            case "0xb88d4fde": return "safeTransferFrom(address,address,uint256,bytes)";
+            case "0xa22cb465": return "setApprovalForAll(address,bool)";
+            case "0xc04b8d59": return "exactInput(tuple)";
+            case "0x414bf389": return "exactInputSingle(tuple)";
+            case "0xf28c0498": return "exactOutput(tuple)";
+            case "0xdb3e2198": return "exactOutputSingle(tuple)";
+            default: return "Contract Call";
+        }
     }
     
     private void handleDialogReject(int id) {
@@ -855,7 +1023,6 @@ public class DAppBrowserActivity extends AppCompatActivity {
             currentConfirmDialog = null;
         }
         
-        // Send rejection response to WebView
         handleWeb3Response(id, null, "User rejected the request");
         
         pendingRequestId = -1;
@@ -864,18 +1031,21 @@ public class DAppBrowserActivity extends AppCompatActivity {
     }
     
     private void handleDialogConfirm(int id, String method, String params) {
+        Log.d(TAG, "handleDialogConfirm called for method: " + method);
+        
         if (currentConfirmDialog != null) {
             currentConfirmDialog.dismiss();
             currentConfirmDialog = null;
         }
         
-        // Send request to React app for signing (it will handle PIN verification)
         Intent intent = new Intent(ACTION_WEB3_REQUEST);
         intent.putExtra("id", id);
         intent.putExtra("method", method);
         intent.putExtra("params", params);
         intent.putExtra("confirmed", true);
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+        
+        Log.d(TAG, "Broadcast sent for confirmed request");
         
         pendingRequestId = -1;
         pendingMethod = "";
@@ -887,7 +1057,7 @@ public class DAppBrowserActivity extends AppCompatActivity {
     }
     
     private String shortenAddress(String address) {
-        if (address == null || address.length() < 10) return address;
+        if (address == null || address.length() < 10) return address != null ? address : "";
         return address.substring(0, 6) + "..." + address.substring(address.length() - 4);
     }
     
@@ -901,21 +1071,38 @@ public class DAppBrowserActivity extends AppCompatActivity {
             case 10: return "ETH";
             case 250: return "FTM";
             case 25: return "CRO";
+            case 8453: return "ETH";
             default: return "ETH";
         }
     }
     
     private String getChainName() {
         switch (currentChainId) {
-            case 1: return "Ethereum";
-            case 56: return "BSC";
+            case 1: return "Ethereum Mainnet";
+            case 56: return "BNB Smart Chain";
             case 137: return "Polygon";
-            case 43114: return "Avalanche";
-            case 42161: return "Arbitrum";
+            case 43114: return "Avalanche C-Chain";
+            case 42161: return "Arbitrum One";
             case 10: return "Optimism";
-            case 250: return "Fantom";
+            case 250: return "Fantom Opera";
             case 25: return "Cronos";
+            case 8453: return "Base";
             default: return "Chain " + currentChainId;
+        }
+    }
+    
+    private String getChainColor() {
+        switch (currentChainId) {
+            case 1: return "#627EEA";
+            case 56: return "#F3BA2F";
+            case 137: return "#8247E5";
+            case 43114: return "#E84142";
+            case 42161: return "#28A0F0";
+            case 10: return "#FF0420";
+            case 250: return "#1969FF";
+            case 25: return "#002D74";
+            case 8453: return "#0052FF";
+            default: return "#888888";
         }
     }
     
@@ -1022,10 +1209,12 @@ public class DAppBrowserActivity extends AppCompatActivity {
             "window.web3={currentProvider:provider};" +
             
             "var info={uuid:'vaultkey-1',name:'VaultKey',icon:'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHZpZXdCb3g9IjAgMCAzMiAzMiI+PGNpcmNsZSBjeD0iMTYiIGN5PSIxNiIgcj0iMTYiIGZpbGw9IiMxYTFhMmUiLz48dGV4dCB4PSIxNiIgeT0iMjEiIGZvbnQtc2l6ZT0iMTQiIGZpbGw9IiNmZmYiIHRleHQtYW5jaG9yPSJtaWRkbGUiPuKXiDwvdGV4dD48L3N2Zz4=',rdns:'app.vaultkey.wallet'};" +
-            "var detail={info:info,provider:provider};" +
-            "window.dispatchEvent(new CustomEvent('eip6963:announceProvider',{detail:detail}));" +
-            "window.addEventListener('eip6963:requestProvider',function(){window.dispatchEvent(new CustomEvent('eip6963:announceProvider',{detail:detail}));});" +
+            "var announceProvider=function(){try{window.dispatchEvent(new CustomEvent('eip6963:announceProvider',{detail:Object.freeze({info:info,provider:provider})}));}catch(e){}};" +
+            "window.addEventListener('eip6963:requestProvider',announceProvider);" +
+            "announceProvider();" +
             
+            "provider.emit('connect',{chainId:_chainId});" +
+            "console.log('VaultKey wallet injected');" +
             "})();";
     }
     
@@ -1038,7 +1227,14 @@ public class DAppBrowserActivity extends AppCompatActivity {
                 String method = json.getString("method");
                 String params = json.optString("params", "[]");
                 
-                Log.d(TAG, "Web3 request: " + method);
+                if (json.has("params")) {
+                    Object paramsObj = json.get("params");
+                    if (paramsObj instanceof org.json.JSONArray) {
+                        params = paramsObj.toString();
+                    }
+                }
+                
+                Log.d(TAG, "WalletBridge received: " + method);
                 sendWeb3Request(id, method, params);
             } catch (Exception e) {
                 Log.e(TAG, "Error parsing message", e);
@@ -1054,14 +1250,14 @@ public class DAppBrowserActivity extends AppCompatActivity {
         if (responseReceiver != null) lbm.unregisterReceiver(responseReceiver);
         if (closeReceiver != null) lbm.unregisterReceiver(closeReceiver);
         if (updateReceiver != null) lbm.unregisterReceiver(updateReceiver);
+        if (resumeReceiver != null) lbm.unregisterReceiver(resumeReceiver);
+        if (pinRequestReceiver != null) lbm.unregisterReceiver(pinRequestReceiver);
         
-        if (webView != null) {
-            webView.stopLoading();
-            webView.loadUrl("about:blank");
-            webView.clearHistory();
-            webView.removeAllViews();
-            webView.destroy();
-            webView = null;
+        if (currentConfirmDialog != null && currentConfirmDialog.isShowing()) {
+            currentConfirmDialog.dismiss();
+        }
+        if (currentPinDialog != null && currentPinDialog.isShowing()) {
+            currentPinDialog.dismiss();
         }
         
         sendBrowserEvent("", false);
