@@ -48,7 +48,7 @@ const POPULAR_DAPPS: DAppInfo[] = [
 ];
 
 export default function DApps() {
-  const { isConnected, isUnlocked, wallets, chains, walletMode, isWalletGroupUnlocked, lockWalletGroup, setPinAction, setShowPinModal, setPendingWalletGroupId } = useWallet();
+  const { isConnected, isUnlocked, wallets, chains, walletMode, isWalletGroupUnlocked, lockWalletGroup, unlockWalletGroup, setPinAction, setShowPinModal, setPendingWalletGroupId } = useWallet();
   const { toast } = useToast();
   
   const [url, setUrl] = useState("");
@@ -106,12 +106,100 @@ export default function DApps() {
     }
   }, [connectedWallet, selectedChainId, isNativeBrowserOpen]);
 
-  // Handle sign request from DApp - show confirmation dialog
-  const handleSignRequest = useCallback((method: string, params: any[]): Promise<string | null> => {
-    return new Promise((resolve) => {
-      setPendingSignRequest({ method, params, resolve });
-    });
-  }, []);
+  // Handle sign request from DApp - native dialog shows confirmation, we handle signing
+  const handleSignRequest = useCallback(async (method: string, params: any[], confirmed: boolean): Promise<string | null> => {
+    console.log("[DApps] handleSignRequest:", method, "confirmed:", confirmed);
+    
+    // Only proceed if user confirmed in native dialog
+    if (!confirmed) {
+      return null; // User rejected in native dialog
+    }
+    
+    // Check if wallet group needs PIN
+    if (walletMode === "soft_wallet") {
+      const groupUnlocked = isWalletGroupUnlocked(connectedWalletGroupId);
+      if (!groupUnlocked) {
+        // Request PIN from native dialog
+        console.log("[DApps] Wallet locked, requesting PIN from native dialog");
+        const pin = await nativeDAppBrowser.requestPin(connectedWalletGroupId || "");
+        
+        if (!pin) {
+          console.log("[DApps] PIN entry cancelled");
+          return null;
+        }
+        
+        // Verify and unlock with PIN
+        try {
+          const success = await unlockWalletGroup(connectedWalletGroupId || "", pin);
+          if (!success) {
+            toast({
+              title: "Invalid PIN",
+              description: "The PIN you entered is incorrect",
+              variant: "destructive",
+            });
+            return null;
+          }
+        } catch (e: any) {
+          console.error("[DApps] PIN verification error:", e);
+          return null;
+        }
+      }
+    }
+    
+    // Now proceed with signing
+    try {
+      dappBridge.setAccount(connectedWallet || "");
+      dappBridge.setChainId(selectedChainId);
+      dappBridge.setWalletMode(walletMode === "hard_wallet" ? "hardware" : "soft_wallet");
+      dappBridge.setWalletGroupId(connectedWalletGroupId);
+      
+      // Create a promise to capture the response
+      let signedResult: string | null = null;
+      
+      dappBridge.setResponseHandler((response) => {
+        if (response.result) {
+          signedResult = response.result;
+        }
+      });
+      
+      // Execute the request through dappBridge
+      await dappBridge.handleRequest({
+        type: "web3_request",
+        id: Date.now(),
+        method,
+        params
+      });
+      
+      // Lock wallet after signing (one-shot pattern)
+      if (walletMode === "soft_wallet" && connectedWalletGroupId) {
+        lockWalletGroup(connectedWalletGroupId);
+      }
+      
+      if (signedResult) {
+        toast({
+          title: "Signed Successfully",
+          description: method.includes("send") ? "Transaction sent" : "Request signed",
+          duration: 3000,
+        });
+      }
+      
+      return signedResult;
+    } catch (error: any) {
+      console.error("[DApps] Sign error:", error);
+      toast({
+        title: "Signing Failed",
+        description: error?.message || "Failed to sign request",
+        variant: "destructive",
+      });
+      
+      // Lock after failure too
+      if (walletMode === "soft_wallet" && connectedWalletGroupId) {
+        lockWalletGroup(connectedWalletGroupId);
+      }
+      
+      return null;
+    }
+  }, [connectedWallet, connectedWalletGroupId, selectedChainId, walletMode, toast, isWalletGroupUnlocked, lockWalletGroup, unlockWalletGroup]);
 
   // Format transaction details for display
   const formatTransactionDetails = useCallback((method: string, params: any[]) => {
