@@ -474,14 +474,20 @@ public class DAppBrowserActivity extends AppCompatActivity {
         intent.putExtra("params", params);
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
         
-        // For signing requests, minimize browser to show confirmation dialog in main app
+        // For signing requests, bring main activity to foreground so confirmation dialog is visible
         if (method.equals("eth_sendTransaction") || 
             method.equals("eth_signTransaction") ||
             method.equals("personal_sign") ||
             method.equals("eth_sign") ||
             method.startsWith("eth_signTypedData")) {
-            // Move browser to back so confirmation dialog is visible
-            moveTaskToBack(true);
+            // Bring MainActivity to foreground instead of moving browser to back
+            try {
+                Intent mainIntent = new Intent(this, MainActivity.class);
+                mainIntent.setFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                startActivity(mainIntent);
+            } catch (Exception e) {
+                Log.e(TAG, "Error bringing main activity to front", e);
+            }
         }
     }
     
