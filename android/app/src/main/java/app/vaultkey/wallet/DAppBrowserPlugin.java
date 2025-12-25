@@ -22,6 +22,7 @@ public class DAppBrowserPlugin extends Plugin {
     private Handler mainHandler = new Handler(Looper.getMainLooper());
     private BroadcastReceiver browserEventReceiver;
     private BroadcastReceiver web3RequestReceiver;
+    private BroadcastReceiver pinResponseReceiver;
     private boolean isBrowserOpen = false;
 
     @Override
@@ -58,17 +59,35 @@ public class DAppBrowserPlugin extends Plugin {
                 int id = intent.getIntExtra("id", 0);
                 String method = intent.getStringExtra("method");
                 String params = intent.getStringExtra("params");
+                boolean confirmed = intent.getBooleanExtra("confirmed", false);
                 
                 JSObject event = new JSObject();
                 event.put("id", id);
                 event.put("method", method != null ? method : "");
                 event.put("params", params != null ? params : "[]");
+                event.put("confirmed", confirmed);
                 notifyListeners("web3Request", event);
+            }
+        };
+        
+        pinResponseReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String pin = intent.getStringExtra("pin");
+                String walletGroupId = intent.getStringExtra("walletGroupId");
+                boolean cancelled = intent.getBooleanExtra("cancelled", false);
+                
+                JSObject event = new JSObject();
+                event.put("pin", pin != null ? pin : "");
+                event.put("walletGroupId", walletGroupId != null ? walletGroupId : "");
+                event.put("cancelled", cancelled);
+                notifyListeners("pinResponse", event);
             }
         };
         
         lbm.registerReceiver(browserEventReceiver, new IntentFilter(DAppBrowserActivity.ACTION_BROWSER_EVENT));
         lbm.registerReceiver(web3RequestReceiver, new IntentFilter(DAppBrowserActivity.ACTION_WEB3_REQUEST));
+        lbm.registerReceiver(pinResponseReceiver, new IntentFilter(DAppBrowserActivity.ACTION_PIN_RESPONSE));
     }
 
     @PluginMethod
@@ -167,6 +186,19 @@ public class DAppBrowserPlugin extends Plugin {
         ret.put("success", true);
         call.resolve(ret);
     }
+    
+    @PluginMethod
+    public void requestPin(PluginCall call) {
+        String walletGroupId = call.getString("walletGroupId", "");
+        
+        Intent intent = new Intent(DAppBrowserActivity.ACTION_REQUEST_PIN);
+        intent.putExtra("walletGroupId", walletGroupId);
+        LocalBroadcastManager.getInstance(getContext()).sendBroadcast(intent);
+        
+        JSObject ret = new JSObject();
+        ret.put("success", true);
+        call.resolve(ret);
+    }
 
     @Override
     protected void handleOnDestroy() {
@@ -178,6 +210,9 @@ public class DAppBrowserPlugin extends Plugin {
         }
         if (web3RequestReceiver != null) {
             lbm.unregisterReceiver(web3RequestReceiver);
+        }
+        if (pinResponseReceiver != null) {
+            lbm.unregisterReceiver(pinResponseReceiver);
         }
     }
 }
