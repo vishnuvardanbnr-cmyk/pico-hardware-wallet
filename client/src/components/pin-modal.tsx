@@ -134,8 +134,8 @@ export function PinModal() {
   }, [step]);
 
   const handleSubmit = useCallback(async () => {
-    // Handle sign action with one-shot PIN verification for soft wallet
-    if (pinAction === "sign" && pendingTransaction && walletMode === "soft_wallet") {
+    // Handle sign action for both wallet modes
+    if (pinAction === "sign" && pendingTransaction) {
       if (pin.length < 4) {
         setError("PIN must be at least 4 digits");
         return;
@@ -143,6 +143,17 @@ export function PinModal() {
 
       setIsLoading(true);
       try {
+        // For hard wallet, unlock first
+        if (walletMode === "hard_wallet") {
+          const success = await unlockWallet(pin);
+          if (!success) {
+            setError("Incorrect PIN. Please try again.");
+            setPin("");
+            setIsLoading(false);
+            return;
+          }
+        }
+
         const chainSupport = isChainSupported(pendingTransaction.chainId);
         
         if (!chainSupport.supported) {
@@ -173,7 +184,7 @@ export function PinModal() {
           return;
         }
 
-        // Determine wallet group for one-shot signing
+        // Determine wallet group for one-shot signing (only needed for soft wallet)
         const walletGroupId = pendingTransaction.walletGroupId || PRIMARY_WALLET_GROUP;
         const chainSymbol = getChainSymbol(pendingTransaction.chainId);
         const isNonEvmChain = chainSupport.type === "bitcoin" || chainSupport.type === "solana" || chainSupport.type === "tron";
@@ -187,8 +198,21 @@ export function PinModal() {
             isNativeToken: pendingTransaction.isNativeToken ?? true,
           };
 
-          // Use one-shot signing with PIN verification (no unlock needed)
-          const signedResult = await softWallet.signNonEvmTransactionWithPin(nonEvmParams, walletGroupId, pin);
+          let signedResult: { chainType: "bitcoin" | "solana" | "tron"; signedTx: string; txHash?: string } | null = null;
+          
+          if (walletMode === "soft_wallet") {
+             signedResult = await softWallet.signNonEvmTransactionWithPin(nonEvmParams, walletGroupId, pin);
+          } else {
+             // Hard wallet
+             const result = await hardwareWallet.signNonEvmTransaction(nonEvmParams);
+             if (result) {
+                 signedResult = {
+                     chainType: nonEvmParams.chainType,
+                     signedTx: result.signedTx,
+                     txHash: result.txHash
+                 };
+             }
+          }
           
           if (!signedResult) {
             toast({
@@ -242,7 +266,7 @@ export function PinModal() {
             refreshBalances();
           }
         } else {
-          // EVM chain - build and sign transaction with one-shot PIN verification
+          // EVM chain - build and sign transaction
           let tokenContract: { address: string; decimals: number } | null = null;
           if (!pendingTransaction.isNativeToken && pendingTransaction.tokenSymbol) {
             const contractInfo = getTokenContract(pendingTransaction.tokenSymbol, pendingTransaction.chainId);
@@ -292,8 +316,13 @@ export function PinModal() {
             return;
           }
 
-          // Use one-shot signing with PIN verification (no unlock needed)
-          const signedTx = await softWallet.signTransactionWithPin(txResult.tx, walletGroupId, pin);
+          let signedTx: string | null = null;
+          
+          if (walletMode === "soft_wallet") {
+              signedTx = await softWallet.signTransactionWithPin(txResult.tx, walletGroupId, pin);
+          } else {
+              signedTx = await hardwareWallet.signTransaction(txResult.tx);
+          }
           
           if (!signedTx) {
             toast({
@@ -429,8 +458,8 @@ export function PinModal() {
       return;
     }
 
-    // Handle unlock action (for viewing wallet) and hard wallet signing
-    if (pinAction === "unlock" || (pinAction === "sign" && walletMode === "hard_wallet")) {
+    // Handle unlock action (for viewing wallet)
+    if (pinAction === "unlock") {
       if (pin.length < 4) {
         setError("PIN must be at least 4 digits");
         return;
