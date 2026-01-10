@@ -290,7 +290,7 @@ class PiWalletService {
     
     const txRequest: Record<string, any> = {
       to: tx.to,
-      value: ethers.parseEther(tx.value),
+      value: BigInt(tx.value),
       data: tx.data || "0x",
       nonce: tx.nonce,
       gasLimit: BigInt(tx.gasLimit),
