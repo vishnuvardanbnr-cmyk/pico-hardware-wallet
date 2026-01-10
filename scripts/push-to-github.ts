@@ -1,6 +1,7 @@
 // GitHub Push Script - Uses Replit's GitHub integration
 import { Octokit } from '@octokit/rest';
-import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 
 let connectionSettings: any;
 
@@ -43,8 +44,42 @@ async function getUncachableGitHubClient() {
   return new Octokit({ auth: accessToken });
 }
 
+function getAllFiles(dir: string, baseDir: string = dir): { path: string; content: string }[] {
+  const files: { path: string; content: string }[] = [];
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  
+  const ignoreDirs = ['node_modules', '.git', 'dist', 'android', '.replit', '.cache', '.config', '.upm', '.local', 'attached_assets'];
+  const ignoreFiles = ['.replit', 'replit.nix', '.gitignore'];
+  
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    const relativePath = path.relative(baseDir, fullPath);
+    
+    if (entry.isDirectory()) {
+      if (!ignoreDirs.includes(entry.name) && (!entry.name.startsWith('.') || entry.name === '.github')) {
+        files.push(...getAllFiles(fullPath, baseDir));
+      }
+    } else {
+      if (!ignoreFiles.includes(entry.name) && !entry.name.endsWith('.log')) {
+        try {
+          const content = fs.readFileSync(fullPath, 'utf-8');
+          files.push({ path: relativePath, content });
+        } catch (e) {
+          // Skip binary files
+        }
+      }
+    }
+  }
+  
+  return files;
+}
+
+async function sleep(ms: number) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
 async function main() {
-  const repoName = process.argv[2] || 'pico-hardware-wallet';
+  const repoName = process.argv[2] || 'pico-wallet';
   
   console.log('Getting GitHub client...');
   const octokit = await getUncachableGitHubClient();
@@ -53,40 +88,83 @@ async function main() {
   const { data: user } = await octokit.rest.users.getAuthenticated();
   console.log(`Authenticated as: ${user.login}`);
   
-  let repoExists = false;
+  // Delete existing repo to start fresh
+  console.log('Deleting existing repository to start fresh...');
   try {
-    await octokit.rest.repos.get({ owner: user.login, repo: repoName });
-    repoExists = true;
-    console.log(`Repository ${user.login}/${repoName} already exists`);
-  } catch (error: any) {
-    if (error.status === 404) {
-      console.log(`Repository not found, creating ${user.login}/${repoName}...`);
-      await octokit.rest.repos.createForAuthenticatedUser({
-        name: repoName,
-        description: 'Multi-chain cryptocurrency hardware wallet application',
-        private: false,
+    await octokit.rest.repos.delete({ owner: user.login, repo: repoName });
+    console.log('Deleted existing repo');
+    await sleep(2000);
+  } catch (e) {
+    console.log('No existing repo to delete or no permission');
+  }
+  
+  // Create new repo with auto_init
+  console.log(`Creating repository ${user.login}/${repoName}...`);
+  try {
+    await octokit.rest.repos.createForAuthenticatedUser({
+      name: repoName,
+      description: 'Multi-chain cryptocurrency hardware wallet application',
+      private: false,
+      auto_init: true
+    });
+    console.log('Repository created with initial README');
+    await sleep(3000);
+  } catch (e: any) {
+    if (e.status !== 422) throw e;
+    console.log('Repo already exists');
+  }
+  
+  // Collect files
+  console.log('Collecting files...');
+  const files = getAllFiles('.');
+  console.log(`Found ${files.length} files to upload`);
+  
+  // Upload files using Contents API (one at a time)
+  let uploaded = 0;
+  let failed = 0;
+  
+  for (const file of files) {
+    try {
+      // Get existing file SHA if it exists
+      let sha: string | undefined;
+      try {
+        const { data } = await octokit.rest.repos.getContent({
+          owner: user.login,
+          repo: repoName,
+          path: file.path
+        });
+        if (!Array.isArray(data) && 'sha' in data) {
+          sha = data.sha;
+        }
+      } catch (e) {
+        // File doesn't exist yet
+      }
+      
+      await octokit.rest.repos.createOrUpdateFileContents({
+        owner: user.login,
+        repo: repoName,
+        path: file.path,
+        message: `Add ${file.path}`,
+        content: Buffer.from(file.content).toString('base64'),
+        sha
       });
-      console.log('Repository created successfully');
-    } else {
-      throw error;
+      
+      uploaded++;
+      if (uploaded % 20 === 0) {
+        console.log(`  Uploaded ${uploaded}/${files.length} files...`);
+      }
+    } catch (e: any) {
+      failed++;
+      if (e.status !== 422) {
+        console.log(`  Failed: ${file.path} - ${e.message}`);
+      }
     }
   }
   
-  const repoUrl = `https://${await getAccessToken()}@github.com/${user.login}/${repoName}.git`;
-  
-  try {
-    execSync('git remote remove origin', { stdio: 'pipe' });
-  } catch (e) {
-    // Origin doesn't exist, that's fine
-  }
-  
-  console.log('Adding GitHub remote...');
-  execSync(`git remote add origin ${repoUrl}`, { stdio: 'inherit' });
-  
-  console.log('Pushing to GitHub...');
-  execSync('git push -u origin main --force', { stdio: 'inherit' });
-  
-  console.log(`\nSuccess! Repository available at: https://github.com/${user.login}/${repoName}`);
+  console.log(`\nUploaded ${uploaded} files, ${failed} skipped/failed`);
+  console.log(`\nSuccess! Code pushed to: https://github.com/${user.login}/${repoName}`);
+  console.log(`\nGitHub Actions will now build the APK automatically.`);
+  console.log(`Check: https://github.com/${user.login}/${repoName}/actions`);
 }
 
 main().catch(err => {
