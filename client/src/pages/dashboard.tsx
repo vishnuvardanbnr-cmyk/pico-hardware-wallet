@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { 
   ArrowUpRight, 
   ArrowDownLeft, 
@@ -12,7 +12,22 @@ import {
   ChevronLeft,
   ChevronRight,
   Check,
+  Eye,
+  EyeOff,
+  Shield,
+  Lock,
+  Pencil,
+  ScanLine,
+  Camera,
+  X,
+  Clipboard,
+  Link2,
+  Globe,
 } from "lucide-react";
+import { Html5Qrcode } from "html5-qrcode";
+import { softWallet } from "@/lib/soft-wallet";
+import { Mnemonic, HDNodeWallet } from "ethers";
+import { fetchNFTs, fetchSingleNFT, type NFT } from "@/lib/nft-service";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -49,6 +64,8 @@ import { isTokenAsset } from "@/lib/blockchain";
 import { clientStorage, type CustomToken } from "@/lib/client-storage";
 import { COINGECKO_ID_TO_CHAIN_SYMBOL, TOKEN_PARENT_CHAIN_SYMBOL, TOKEN_PARENT_CHAIN } from "@/lib/chain-mappings";
 import { FALLBACK_TOP_ASSETS } from "@shared/schema";
+import { walletConnectService, type DAppSession } from "@/lib/walletconnect-service";
+import { Textarea } from "@/components/ui/textarea";
 
 const formatBalance = formatCryptoBalance;
 
@@ -337,7 +354,7 @@ function DashboardSkeleton() {
 }
 
 export default function Dashboard() {
-  const { isConnected, isUnlocked, chains, wallets, refreshBalances, refreshWalletBalance, topAssets, enabledAssetIds, isLoadingAssets, refreshTopAssets, createAdditionalWallet, createWalletWithNewSeed, walletMode, isLoading, selectedAccountIndex, setSelectedAccountIndex, availableAccounts, visibleWallets, customTokens, balanceCacheStatus, hasSoftWalletSetup, hasHardWalletSetup, tokenBalances, customTokenBalances, setShowPinModal, setPinAction, setPendingWalletGroupId, isWalletGroupUnlocked, setPendingWalletAccess } = useWallet();
+  const { isConnected, isUnlocked, chains, wallets, refreshBalances, refreshWalletBalance, topAssets, enabledAssetIds, isLoadingAssets, refreshTopAssets, createAdditionalWallet, createWalletWithNewSeed, walletMode, isLoading, selectedAccountIndex, setSelectedAccountIndex, availableAccounts, visibleWallets, customTokens, balanceCacheStatus, hasSoftWalletSetup, hasHardWalletSetup, tokenBalances, customTokenBalances, showPinModal, setShowPinModal, setPinAction, setPendingWalletGroupId, isWalletGroupUnlocked, setPendingWalletAccess, renameWallet } = useWallet();
   const { toast } = useToast();
   const [, navigate] = useLocation();
   
@@ -359,17 +376,330 @@ export default function Dashboard() {
   const [seedConfirmed, setSeedConfirmed] = useState(false);
   const [showAssets, setShowAssets] = useState(true);
   
+  // Wallet Settings / Secret Reveal State
+  const [showWalletSettingsDialog, setShowWalletSettingsDialog] = useState(false);
+  const [showSecretFor, setShowSecretFor] = useState<"seed" | "privateKey" | null>(null);
+  const [revealPin, setRevealPin] = useState("");
+  const [revealError, setRevealError] = useState("");
+  const [decryptedSecret, setDecryptedSecret] = useState("");
+  const [isRevealing, setIsRevealing] = useState(false);
+  const [editWalletLabel, setEditWalletLabel] = useState("");
+  const [isEditingLabel, setIsEditingLabel] = useState(false);
+  
+  // NFT State
+  const [nfts, setNfts] = useState<NFT[]>([]);
+  const [isLoadingNFTs, setIsLoadingNFTs] = useState(false);
+  const [nftError, setNftError] = useState<string | null>(null);
+  const [nftPage, setNftPage] = useState(1);
+  const [showAddNFTDialog, setShowAddNFTDialog] = useState(false);
+  const [customNFTContract, setCustomNFTContract] = useState("");
+  const [customNFTTokenId, setCustomNFTTokenId] = useState("");
+  const [isAddingNFT, setIsAddingNFT] = useState(false);
+  const NFTS_PER_PAGE = 8;
+
   // Hierarchical navigation state
   const [viewLevel, setViewLevel] = useState<ViewLevel>('chains');
   const [selectedChain, setSelectedChain] = useState<Chain | null>(null);
   const [selectedWallet, setSelectedWallet] = useState<WalletType | null>(null);
   
+  // Debug: log when selectedWallet changes
+  useEffect(() => {
+    console.log("[Dashboard] selectedWallet changed:", selectedWallet?.id, "label:", selectedWallet?.label, "address:", selectedWallet?.address);
+  }, [selectedWallet]);
+  
+  // Persist selected wallet/chain to sessionStorage for navigation preservation
+  useEffect(() => {
+    if (selectedWallet && selectedChain) {
+      sessionStorage.setItem('dashboard_selectedWalletId', selectedWallet.id);
+      sessionStorage.setItem('dashboard_selectedChainId', selectedChain.id);
+      sessionStorage.setItem('dashboard_viewLevel', 'tokens');
+    }
+  }, [selectedWallet, selectedChain]);
+  
+  // Restore wallet/chain from sessionStorage on mount (handles history.back() navigation)
+  useEffect(() => {
+    if (wallets.length === 0 || chains.length === 0) return;
+    if (selectedWallet || selectedChain) return; // Already have selection, don't override
+    
+    const savedWalletId = sessionStorage.getItem('dashboard_selectedWalletId');
+    const savedChainId = sessionStorage.getItem('dashboard_selectedChainId');
+    const savedViewLevel = sessionStorage.getItem('dashboard_viewLevel');
+    
+    if (savedWalletId && savedChainId && savedViewLevel === 'tokens') {
+      const wallet = wallets.find(w => w.id === savedWalletId);
+      const chain = chains.find(c => c.id === savedChainId);
+      
+      if (wallet && chain) {
+        console.log("[Dashboard] Restoring from sessionStorage:", savedWalletId, "label:", wallet.label);
+        setSelectedChain(chain);
+        setSelectedWallet(wallet);
+        setViewLevel('tokens');
+      }
+    }
+  }, [wallets, chains, selectedWallet, selectedChain]);
+
+  // WalletConnect Scanner State
+  const [showWcScannerDialog, setShowWcScannerDialog] = useState(false);
+  const [wcUri, setWcUri] = useState("");
+  const [isWcConnecting, setIsWcConnecting] = useState(false);
+  const [wcScannerActive, setWcScannerActive] = useState(false);
+  const [wcScanError, setWcScanError] = useState<string | null>(null);
+  const qrScannerRef = useRef<Html5Qrcode | null>(null);
+  const scannerContainerRef = useRef<HTMLDivElement | null>(null);
+  const [wcSessions, setWcSessions] = useState<DAppSession[]>([]);
+
+  // Get sessions for current wallet
+  const walletWcSessions = useMemo(() => {
+    if (!selectedWallet) return [];
+    const walletAddr = selectedWallet.address.toLowerCase();
+    return wcSessions.filter(session => 
+      session.accounts.some(acc => acc.toLowerCase().includes(walletAddr))
+    );
+  }, [wcSessions, selectedWallet]);
+
+  // Refresh WalletConnect sessions
+  const refreshWcSessions = useCallback(() => {
+    const sessions = walletConnectService.getSessions();
+    setWcSessions(sessions);
+  }, []);
+
+  // Disconnect from a DApp
+  const handleDisconnectDapp = async (topic: string, name: string) => {
+    try {
+      await walletConnectService.disconnectSession(topic);
+      refreshWcSessions();
+      toast({
+        title: "Disconnected",
+        description: `Disconnected from ${name}`,
+        duration: 2000,
+      });
+    } catch (err: any) {
+      toast({
+        title: "Error",
+        description: err.message || "Failed to disconnect",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Initialize WalletConnect listeners
+  useEffect(() => {
+    const initWC = async () => {
+      try {
+        await walletConnectService.init();
+        refreshWcSessions();
+      } catch (err) {
+        console.error("WalletConnect init error:", err);
+      }
+    };
+    initWC();
+
+    const unsubProposal = walletConnectService.onSessionProposal(async (proposal) => {
+      setShowWcScannerDialog(false);
+      
+      // Auto-approve with currently selected wallet
+      if (selectedWallet && selectedWallet.address) {
+        try {
+          await walletConnectService.approveSession(
+            proposal.rawProposal,
+            [selectedWallet.address]
+          );
+          refreshWcSessions();
+          toast({
+            title: "Connected",
+            description: `Connected to ${proposal.proposer.name}`,
+            duration: 2000,
+          });
+        } catch (err: any) {
+          toast({
+            title: "Connection Failed",
+            description: err.message || "Failed to connect",
+            variant: "destructive",
+          });
+        }
+      } else {
+        toast({
+          title: "No Wallet Selected",
+          description: "Please select a wallet first",
+          variant: "destructive",
+        });
+      }
+    });
+
+    const unsubUpdate = walletConnectService.onSessionUpdate(() => {
+      refreshWcSessions();
+    });
+
+    return () => {
+      unsubProposal();
+      unsubUpdate();
+    };
+  }, [selectedWallet, refreshWcSessions]);
+
+  // Cleanup scanner on dialog close
+  const stopScanner = useCallback(async () => {
+    if (qrScannerRef.current) {
+      try {
+        await qrScannerRef.current.stop();
+        qrScannerRef.current.clear();
+      } catch (e) {
+        // Ignore errors
+      }
+      qrScannerRef.current = null;
+    }
+    setWcScannerActive(false);
+  }, []);
+
+  // Start QR scanner
+  const startScanner = useCallback(async () => {
+    if (!scannerContainerRef.current || qrScannerRef.current) return;
+    
+    setWcScanError(null);
+    try {
+      const scanner = new Html5Qrcode("wc-qr-scanner");
+      qrScannerRef.current = scanner;
+      
+      await scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        async (decodedText) => {
+          if (decodedText.startsWith("wc:")) {
+            await stopScanner();
+            setWcUri(decodedText);
+            handleWcConnect(decodedText);
+          } else {
+            setWcScanError("Invalid QR code. Please scan a WalletConnect QR code.");
+          }
+        },
+        () => {} // Ignore errors
+      );
+      setWcScannerActive(true);
+    } catch (err: any) {
+      console.error("Scanner error:", err);
+      setWcScanError(err.message || "Failed to start camera");
+    }
+  }, [stopScanner]);
+
+  // Handle WalletConnect connection
+  const handleWcConnect = async (uri?: string) => {
+    const connectUri = uri || wcUri.trim();
+    if (!connectUri) {
+      toast({
+        title: "Error",
+        description: "Please enter or scan a WalletConnect URI",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!connectUri.startsWith("wc:")) {
+      toast({
+        title: "Invalid URI",
+        description: "WalletConnect URIs must start with 'wc:'",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsWcConnecting(true);
+    try {
+      await walletConnectService.pair(connectUri);
+      setWcUri("");
+      setShowWcScannerDialog(false);
+      toast({
+        title: "Connecting",
+        description: "Waiting for DApp to respond...",
+        duration: 2000,
+      });
+    } catch (err: any) {
+      toast({
+        title: "Connection Failed",
+        description: err.message || "Failed to connect",
+        variant: "destructive",
+      });
+    } finally {
+      setIsWcConnecting(false);
+    }
+  };
+
+  // Paste from clipboard
+  const handlePasteUri = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text.startsWith("wc:")) {
+        setWcUri(text);
+      } else {
+        toast({
+          title: "Invalid URI",
+          description: "Clipboard doesn't contain a valid WalletConnect URI",
+          variant: "destructive",
+        });
+      }
+    } catch (err) {
+      toast({
+        title: "Paste Failed",
+        description: "Could not read from clipboard",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleRevealSecret = async () => {
+    if (!selectedWallet) return;
+    
+    // Basic validation
+    if (!revealPin || revealPin.length < 4) {
+      setRevealError("Please enter your PIN");
+      return;
+    }
+
+    setIsRevealing(true);
+    setRevealError("");
+    try {
+      // Use walletGroupId from selectedWallet or default to 'primary'
+      const walletGroupId = selectedWallet.walletGroupId || "primary";
+      const seed = await softWallet.verifyAndDecryptWalletGroup(walletGroupId, revealPin);
+      
+      if (seed) {
+        if (showSecretFor === "seed") {
+          setDecryptedSecret(seed);
+        } else {
+           // Derive private key
+           // Use standard path or try to infer. For now using standard Ethereum path.
+           // Note: This derives the private key for the first account (index 0).
+           // If the wallet has a specific path stored, we should use it, but for now this is standard.
+           try {
+             const mnemonic = Mnemonic.fromPhrase(seed);
+             const hdNode = HDNodeWallet.fromMnemonic(mnemonic, "m/44'/60'/0'/0/0");
+             setDecryptedSecret(hdNode.privateKey);
+           } catch (e) {
+             setRevealError("Failed to derive private key");
+           }
+        }
+      } else {
+        setRevealError("Incorrect PIN");
+      }
+    } catch (e: any) {
+      setRevealError(e.message || "Failed to verify PIN");
+    } finally {
+      setIsRevealing(false);
+    }
+  };
+
+  const closeRevealDialog = () => {
+    setShowSecretFor(null);
+    setRevealPin("");
+    setRevealError("");
+    setDecryptedSecret("");
+    setIsRevealing(false);
+  };
+
   // Track last URL params to detect actual changes (prevents re-running on unrelated state changes)
   const [lastUrlParams, setLastUrlParams] = useState<{ chain: string | null; wallet: string | null }>({ chain: null, wallet: null });
   
   // Restore navigation state from URL params
   useEffect(() => {
-    if (chains.length === 0 || visibleWallets.length === 0) return;
+    if (chains.length === 0 || wallets.length === 0) return;
     
     // Only process if URL params actually changed
     if (chainParam === lastUrlParams.chain && walletParam === lastUrlParams.wallet) return;
@@ -379,7 +709,8 @@ export default function Dashboard() {
       if (chain) {
         setSelectedChain(chain);
         if (walletParam) {
-          const wallet = visibleWallets.find(w => w.id === walletParam);
+          // Look up in ALL wallets, not just visibleWallets (which is filtered by accountIndex)
+          const wallet = wallets.find(w => w.id === walletParam);
           if (wallet) {
             setSelectedWallet(wallet);
             setViewLevel('tokens');
@@ -393,7 +724,7 @@ export default function Dashboard() {
     }
     // Update tracked params
     setLastUrlParams({ chain: chainParam, wallet: walletParam });
-  }, [chainParam, walletParam, chains, visibleWallets, lastUrlParams]);
+  }, [chainParam, walletParam, chains, wallets, lastUrlParams]);
   
   // Chain selection view state
   const [showAllAddedChains, setShowAllAddedChains] = useState(false);
@@ -437,6 +768,41 @@ export default function Dashboard() {
     // When on main view, don't auto-refresh all wallets - too many requests
     // User can manually refresh or balances load when they select a wallet
   }, [wallets.length, refreshWalletBalance, selectedWallet, viewLevel]);
+
+  // Clear NFTs when wallet changes to prevent stale data
+  useEffect(() => {
+    setNfts([]);
+    setNftError(null);
+    setNftPage(1); // Reset pagination
+  }, [selectedWallet?.address, selectedChain?.symbol]);
+
+  // Fetch NFTs when NFT tab is selected and a wallet is chosen
+  useEffect(() => {
+    if (!showAssets && selectedWallet && selectedChain && viewLevel === 'tokens') {
+      const currentAddress = selectedWallet.address;
+      const currentChain = selectedChain.symbol;
+      
+      setIsLoadingNFTs(true);
+      setNftError(null);
+      
+      fetchNFTs(currentAddress, currentChain)
+        .then((fetchedNFTs) => {
+          // Guard against race condition - only update if wallet hasn't changed
+          if (selectedWallet?.address === currentAddress && selectedChain?.symbol === currentChain) {
+            setNfts(fetchedNFTs);
+            setIsLoadingNFTs(false);
+          }
+        })
+        .catch((err) => {
+          console.error('[NFT] Fetch error:', err);
+          // Guard against race condition
+          if (selectedWallet?.address === currentAddress && selectedChain?.symbol === currentChain) {
+            setNftError('Failed to load NFTs');
+            setIsLoadingNFTs(false);
+          }
+        });
+    }
+  }, [showAssets, selectedWallet?.address, selectedChain?.symbol, viewLevel]);
   
   const displayChains = chains;
   const displayWallets = visibleWallets;
@@ -709,8 +1075,8 @@ export default function Dashboard() {
         setWalletCreationType("derive");
         toast({ title: "Wallet Created", description: `New ${selectedChain?.name || ''} wallet has been created successfully` });
       } else {
-        if (!seedPinInput || seedPinInput.length !== 5 || !/^\d+$/.test(seedPinInput)) {
-          toast({ title: "Error", description: "Please enter exactly 5 digits for your PIN", variant: "destructive" });
+        if (!seedPinInput || seedPinInput.length < 4 || seedPinInput.length > 8 || !/^\d+$/.test(seedPinInput)) {
+          toast({ title: "Error", description: "Please enter 4-8 digits for your PIN", variant: "destructive" });
           return;
         }
         const result = await createWalletWithNewSeed(newWalletLabel || undefined, seedPinInput);
@@ -732,6 +1098,9 @@ export default function Dashboard() {
     setSelectedChain(chain);
     setSelectedWallet(null);
     setViewLevel('wallets');
+    // Clear wallet from sessionStorage when switching chains
+    sessionStorage.removeItem('dashboard_selectedWalletId');
+    sessionStorage.removeItem('dashboard_viewLevel');
   };
 
   const handleSelectWallet = (wallet: WalletType) => {
@@ -739,7 +1108,14 @@ export default function Dashboard() {
     const PRIMARY_WALLET_GROUP = "primary";
     const walletGroupId = wallet.walletGroupId || PRIMARY_WALLET_GROUP;
     
-    console.log("[handleSelectWallet] wallet:", wallet.id, "walletGroupId:", wallet.walletGroupId, "isUnlocked:", isWalletGroupUnlocked(wallet.walletGroupId));
+    console.log("[handleSelectWallet] wallet:", wallet.id, "walletGroupId:", wallet.walletGroupId, "isUnlocked:", isWalletGroupUnlocked(wallet.walletGroupId), "pinModalOpen:", showPinModal);
+    
+    // If PIN modal is already open, don't allow switching to a different wallet
+    // This prevents accidental overwrites of the pending wallet access
+    if (showPinModal) {
+      console.log("[handleSelectWallet] PIN modal already open, ignoring wallet selection");
+      return;
+    }
     
     // Store current chain for callback
     const currentChain = selectedChain;
@@ -752,7 +1128,7 @@ export default function Dashboard() {
       setPendingWalletAccess({
         wallet,
         callback: () => {
-          console.log("[handleSelectWallet callback] Setting wallet:", wallet.id, "chain:", currentChain?.name);
+          console.log("[handleSelectWallet callback] Setting wallet:", wallet.id, "label:", wallet.label, "address:", wallet.address, "chain:", currentChain?.name);
           // Ensure chain is set first, then wallet
           if (currentChain) {
             setSelectedChain(currentChain);
@@ -775,10 +1151,17 @@ export default function Dashboard() {
     if (viewLevel === 'tokens') {
       setSelectedWallet(null);
       setViewLevel('wallets');
+      // Clear sessionStorage when leaving tokens view
+      sessionStorage.removeItem('dashboard_selectedWalletId');
+      sessionStorage.removeItem('dashboard_viewLevel');
     } else if (viewLevel === 'wallets') {
       setSelectedChain(null);
       setSelectedWallet(null);
       setViewLevel('chains');
+      // Clear all navigation storage
+      sessionStorage.removeItem('dashboard_selectedWalletId');
+      sessionStorage.removeItem('dashboard_selectedChainId');
+      sessionStorage.removeItem('dashboard_viewLevel');
     }
   };
 
@@ -964,9 +1347,9 @@ export default function Dashboard() {
       <div className="h-screen bg-background flex flex-col">
         {/* Header - Only show full header when chain is selected */}
         {viewLevel !== 'chains' && (
-          <div className="shrink-0 bg-background">
+          <div className="shrink-0 bg-background relative z-10">
             {/* Title Row */}
-            <div className="flex items-center justify-between px-4 py-3 border-b">
+            <div className="flex items-center justify-between px-4 py-3 border-b relative z-20">
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleBack}
@@ -980,15 +1363,43 @@ export default function Dashboard() {
                   {viewLevel === 'tokens' && `${selectedChain?.name} Wallet`}
                 </span>
               </div>
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={handleRefresh}
-                disabled={isRefreshing || balanceCacheStatus.isRefreshing}
-                data-testid="button-refresh-portfolio"
-              >
-                <RefreshCw className={`h-4 w-4 ${isRefreshing || balanceCacheStatus.isRefreshing ? "animate-spin" : ""}`} />
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || balanceCacheStatus.isRefreshing}
+                  data-testid="button-refresh-portfolio"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isRefreshing || balanceCacheStatus.isRefreshing ? "animate-spin" : ""}`} />
+                </Button>
+                {selectedWallet && (
+                  <>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => setShowWcScannerDialog(true)}
+                      data-testid="button-header-scan"
+                    >
+                      <ScanLine className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditWalletLabel(selectedWallet.label || "");
+                        setIsEditingLabel(false);
+                        setShowWalletSettingsDialog(true);
+                      }}
+                      data-testid="button-wallet-settings"
+                    >
+                      <Settings className="h-4 w-4" />
+                    </Button>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Breadcrumb Navigation */}
@@ -1005,45 +1416,14 @@ export default function Dashboard() {
                 {selectedChain && (
                   <>
                     <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
-                    {viewLevel === 'tokens' ? (
-                      <Select
-                        value={selectedChain.id}
-                        onValueChange={(chainId) => {
-                          const chain = chainsWithWallets.find(c => c.id === chainId);
-                          if (chain) {
-                            setSelectedChain(chain);
-                            setSelectedWallet(null);
-                            setViewLevel('wallets');
-                          }
-                        }}
-                      >
-                        <SelectTrigger className="h-auto text-sm border-0 bg-transparent px-0 py-0 gap-1 w-auto" data-testid="select-chain-dropdown">
-                          <div className="flex items-center gap-2">
-                            <ChainIcon symbol={selectedChain.symbol} iconColor={selectedChain.iconColor} size="sm" />
-                            <span>{selectedChain.name}</span>
-                          </div>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {chainsWithWallets.map((chain) => (
-                            <SelectItem key={chain.id} value={chain.id} data-testid={`select-chain-option-${chain.symbol}`}>
-                              <div className="flex items-center gap-2">
-                                <ChainIcon symbol={chain.symbol} iconColor={chain.iconColor} size="sm" />
-                                <span>{chain.name}</span>
-                              </div>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <button 
-                        onClick={() => { setViewLevel('wallets'); setSelectedWallet(null); }}
-                        className={`flex items-center gap-2 ${viewLevel === 'wallets' ? 'font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                        data-testid="breadcrumb-wallets"
-                      >
-                        <ChainIcon symbol={selectedChain.symbol} iconColor={selectedChain.iconColor} size="sm" />
-                        {selectedChain.name}
-                      </button>
-                    )}
+                    <button 
+                      onClick={() => { setViewLevel('wallets'); setSelectedWallet(null); }}
+                      className={`flex items-center gap-2 ${viewLevel === 'wallets' ? 'font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                      data-testid="breadcrumb-wallets"
+                    >
+                      <ChainIcon symbol={selectedChain.symbol} iconColor={selectedChain.iconColor} size="sm" />
+                      {selectedChain.name}
+                    </button>
                   </>
                 )}
                 {selectedWallet && (
@@ -1122,7 +1502,7 @@ export default function Dashboard() {
                               />
                             </div>
                             <div>
-                              <Label htmlFor="seed-pin" className="text-sm">PIN for new seed (5 digits)</Label>
+                              <Label htmlFor="seed-pin" className="text-sm">PIN for new seed (4-8 digits)</Label>
                               <Input
                                 id="seed-pin"
                                 type="password"
@@ -1526,7 +1906,7 @@ export default function Dashboard() {
                 <CardContent className="p-6">
                   <div className="text-center space-y-4">
                     <div>
-                      <p className="text-sm text-muted-foreground mb-1">Main Wallet Balance</p>
+                      <p className="text-sm text-muted-foreground mb-1">{selectedWallet.label || "Main Wallet"} Balance</p>
                       <p className="text-3xl font-bold">
                         {formatUSD(selectedWalletUSDValue)}
                       </p>
@@ -1537,7 +1917,7 @@ export default function Dashboard() {
                     <div className="flex gap-3 justify-center">
                       <Button 
                         className="gap-2 flex-1 sm:flex-none"
-                        onClick={() => navigate(`/transfer?chain=${selectedChain.id}`)}
+                        onClick={() => navigate(`/transfer?chain=${selectedChain.id}&wallet=${selectedWallet.id}`)}
                         data-testid="button-send"
                       >
                         <ArrowUpRight className="h-4 w-4" />
@@ -1546,7 +1926,7 @@ export default function Dashboard() {
                       <Button 
                         variant="outline"
                         className="gap-2 flex-1 sm:flex-none"
-                        onClick={() => navigate(`/transfer?chain=${selectedChain.id}&type=receive`)}
+                        onClick={() => navigate(`/transfer?chain=${selectedChain.id}&wallet=${selectedWallet.id}&type=receive`)}
                         data-testid="button-receive"
                       >
                         <ArrowDownLeft className="h-4 w-4" />
@@ -1556,6 +1936,59 @@ export default function Dashboard() {
                   </div>
                 </CardContent>
               </Card>
+
+              {/* Connected DApps Section */}
+              {walletWcSessions.length > 0 && (
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="font-medium text-sm flex items-center gap-2">
+                        <Link2 className="h-4 w-4" />
+                        Connected DApps
+                      </h3>
+                      <Badge variant="secondary" className="text-xs">
+                        {walletWcSessions.length}
+                      </Badge>
+                    </div>
+                    <div className="space-y-2">
+                      {walletWcSessions.map((session) => (
+                        <div 
+                          key={session.topic}
+                          className="flex items-center justify-between p-2 rounded-lg bg-muted/50"
+                          data-testid={`dapp-session-${session.topic}`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            {session.icon ? (
+                              <img 
+                                src={session.icon} 
+                                alt="" 
+                                className="h-8 w-8 rounded-full bg-background"
+                              />
+                            ) : (
+                              <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center">
+                                <Globe className="h-4 w-4 text-muted-foreground" />
+                              </div>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <p className="font-medium text-sm truncate">{session.name}</p>
+                              <p className="text-xs text-muted-foreground truncate">{session.url}</p>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => handleDisconnectDapp(session.topic, session.name)}
+                            data-testid={`button-disconnect-${session.topic}`}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Assets/NFT Toggle */}
               <div className="flex gap-2">
@@ -1581,7 +2014,7 @@ export default function Dashboard() {
               {showAssets && (
               <Card 
                 className="cursor-pointer hover:bg-muted/30 transition-colors"
-                onClick={() => navigate(`/wallet/${selectedChain.id}/token/native`)}
+                onClick={() => navigate(`/wallet/${selectedChain.id}/token/native?wallet=${selectedWallet.id}`)}
                 data-testid={`card-token-native`}
               >
                 <CardContent className="p-4">
@@ -1614,7 +2047,7 @@ export default function Dashboard() {
                     <Card 
                       key={token.id} 
                       className="cursor-pointer hover:bg-muted/30 transition-colors"
-                      onClick={() => navigate(`/wallet/${selectedChain.id}/token/${token.id}`)}
+                      onClick={() => navigate(`/wallet/${selectedChain.id}/token/${token.id}?wallet=${selectedWallet.id}`)}
                       data-testid={`card-token-${token.id}`}
                     >
                       <CardContent className="p-4">
@@ -1657,7 +2090,7 @@ export default function Dashboard() {
                     <Card 
                       key={token.id} 
                       className="cursor-pointer hover:bg-muted/30 transition-colors"
-                      onClick={() => navigate(`/wallet/${selectedChain.id}/token/${token.id}`)}
+                      onClick={() => navigate(`/wallet/${selectedChain.id}/token/${token.id}?wallet=${selectedWallet.id}`)}
                       data-testid={`card-custom-token-${token.id}`}
                     >
                       <CardContent className="p-4">
@@ -1691,8 +2124,8 @@ export default function Dashboard() {
                   );
                 })}
 
-              {/* Add Custom Token Button - only show for soft wallet */}
-              {walletMode === "soft_wallet" && (
+              {/* Add Custom Token Button - only show for soft wallet and Assets tab */}
+              {showAssets && walletMode === "soft_wallet" && (
               <div className="pt-2">
                 <Link href={`/manage-crypto?chain=${selectedChain.symbol}&wallet=${selectedWallet.id}`}>
                   <Button variant="outline" className="w-full justify-start gap-3 h-14" data-testid="button-add-custom-token">
@@ -1713,6 +2146,221 @@ export default function Dashboard() {
                   </Button>
                 </Link>
               </div>
+              )}
+
+              {/* NFT Gallery - show when NFT tab is selected */}
+              {!showAssets && (
+                <div className="space-y-3">
+                  {isLoadingNFTs ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      {[1, 2, 3, 4].map((i) => (
+                        <Card key={i} className="overflow-hidden">
+                          <Skeleton className="aspect-square w-full" />
+                          <CardContent className="p-3">
+                            <Skeleton className="h-4 w-3/4 mb-2" />
+                            <Skeleton className="h-3 w-1/2" />
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  ) : nftError ? (
+                    <Card data-testid="card-nft-error">
+                      <CardContent className="p-6 text-center">
+                        <p className="text-muted-foreground" data-testid="text-nft-error">{nftError}</p>
+                        <Button 
+                          variant="outline" 
+                          className="mt-4"
+                          onClick={() => {
+                            if (selectedWallet && selectedChain) {
+                              setIsLoadingNFTs(true);
+                              setNftError(null);
+                              fetchNFTs(selectedWallet.address, selectedChain.symbol)
+                                .then(setNfts)
+                                .catch(() => setNftError('Failed to load NFTs'))
+                                .finally(() => setIsLoadingNFTs(false));
+                            }
+                          }}
+                          data-testid="button-retry-nft"
+                        >
+                          <RefreshCw className="mr-2 h-4 w-4" />
+                          Retry
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  ) : nfts.length === 0 ? (
+                    <Card data-testid="card-nft-empty">
+                      <CardContent className="p-6 text-center">
+                        <div className="p-4 rounded-full bg-muted w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+                          <Wallet className="h-8 w-8 text-muted-foreground" />
+                        </div>
+                        <h3 className="font-semibold mb-1" data-testid="text-nft-empty-title">No NFTs Found</h3>
+                        <p className="text-sm text-muted-foreground" data-testid="text-nft-empty-message">
+                          This wallet doesn't have any NFTs on {selectedChain?.name}
+                        </p>
+                      </CardContent>
+                    </Card>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-3">
+                        {nfts.slice(0, nftPage * NFTS_PER_PAGE).map((nft) => (
+                          <Card 
+                            key={nft.id} 
+                            className="overflow-hidden cursor-pointer hover:bg-muted/30 transition-colors"
+                            data-testid={`card-nft-${nft.tokenId}`}
+                          >
+                            <div className="aspect-square bg-muted relative">
+                              {nft.image ? (
+                                <img
+                                  src={nft.image}
+                                  alt={nft.name}
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => {
+                                    (e.target as HTMLImageElement).style.display = 'none';
+                                  }}
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                                  <Wallet className="h-8 w-8" />
+                                </div>
+                              )}
+                            </div>
+                            <CardContent className="p-3">
+                              <h3 className="font-semibold text-sm truncate" data-testid={`text-nft-name-${nft.tokenId}`}>{nft.name}</h3>
+                              <p className="text-xs text-muted-foreground truncate" data-testid={`text-nft-collection-${nft.tokenId}`}>
+                                {nft.collectionName || `Token #${nft.tokenId}`}
+                              </p>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </div>
+                      
+                      {/* Load More Button */}
+                      {nfts.length > nftPage * NFTS_PER_PAGE && (
+                        <div className="flex justify-center pt-2">
+                          <Button 
+                            variant="outline" 
+                            onClick={() => setNftPage(p => p + 1)}
+                            data-testid="button-load-more-nfts"
+                          >
+                            Load More ({nfts.length - nftPage * NFTS_PER_PAGE} remaining)
+                          </Button>
+                        </div>
+                      )}
+                      
+                      {/* NFT Count */}
+                      <p className="text-xs text-muted-foreground text-center" data-testid="text-nft-count">
+                        Showing {Math.min(nftPage * NFTS_PER_PAGE, nfts.length)} of {nfts.length} NFTs
+                      </p>
+                    </>
+                  )}
+
+                  {/* Add Custom NFT Button */}
+                  <div className="pt-2">
+                    <Dialog open={showAddNFTDialog} onOpenChange={setShowAddNFTDialog}>
+                      <DialogTrigger asChild>
+                        <Button 
+                          variant="outline" 
+                          className="w-full justify-start gap-3 h-14" 
+                          data-testid="button-add-custom-nft"
+                        >
+                          <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center">
+                            <Plus className="h-4 w-4" />
+                          </div>
+                          <div className="text-left flex-1">
+                            <p className="font-semibold text-sm">Add Custom NFT</p>
+                            <p className="text-xs text-muted-foreground">
+                              Import an NFT by contract address
+                            </p>
+                          </div>
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-md">
+                        <DialogHeader>
+                          <DialogTitle>Add Custom NFT</DialogTitle>
+                          <DialogDescription>
+                            Import an NFT by entering its contract address and token ID
+                          </DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-4 py-2">
+                          <div>
+                            <Label htmlFor="nft-contract-inline" className="text-sm">Contract Address</Label>
+                            <Input
+                              id="nft-contract-inline"
+                              placeholder="0x..."
+                              value={customNFTContract}
+                              onChange={(e) => setCustomNFTContract(e.target.value)}
+                              className="mt-1.5 font-mono text-sm"
+                              data-testid="input-nft-contract"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="nft-token-id-inline" className="text-sm">Token ID</Label>
+                            <Input
+                              id="nft-token-id-inline"
+                              placeholder="e.g., 1234"
+                              value={customNFTTokenId}
+                              onChange={(e) => setCustomNFTTokenId(e.target.value)}
+                              className="mt-1.5"
+                              data-testid="input-nft-token-id"
+                            />
+                          </div>
+                        </div>
+                        <DialogFooter>
+                          <Button variant="outline" onClick={() => setShowAddNFTDialog(false)} data-testid="button-cancel-add-nft">
+                            Cancel
+                          </Button>
+                          <Button 
+                            onClick={async () => {
+                              if (!customNFTContract || !customNFTTokenId || !selectedChain) return;
+                              
+                              setIsAddingNFT(true);
+                              try {
+                                const normalizedContract = customNFTContract.toLowerCase();
+                                const nft = await fetchSingleNFT(normalizedContract, customNFTTokenId, selectedChain.symbol);
+                                if (nft) {
+                                  const exists = nfts.some(n => 
+                                    n.contractAddress.toLowerCase() === normalizedContract && 
+                                    n.tokenId === customNFTTokenId
+                                  );
+                                  if (exists) {
+                                    toast({ 
+                                      title: "Already Added", 
+                                      description: "This NFT is already in your collection"
+                                    });
+                                    return;
+                                  }
+                                  setNfts(prev => [nft, ...prev]);
+                                  setShowAddNFTDialog(false);
+                                  setCustomNFTContract("");
+                                  setCustomNFTTokenId("");
+                                  toast({ title: "NFT Added", description: `${nft.name} has been added to your collection` });
+                                } else {
+                                  toast({ 
+                                    title: "NFT Not Found", 
+                                    description: "Could not find NFT with the given contract and token ID",
+                                    variant: "destructive"
+                                  });
+                                }
+                              } catch (error) {
+                                toast({ 
+                                  title: "Error", 
+                                  description: "Failed to fetch NFT metadata",
+                                  variant: "destructive"
+                                });
+                              } finally {
+                                setIsAddingNFT(false);
+                              }
+                            }}
+                            disabled={isAddingNFT || !customNFTContract || !customNFTTokenId}
+                            data-testid="button-confirm-add-nft"
+                          >
+                            {isAddingNFT ? "Loading..." : "Add NFT"}
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
+                </div>
               )}
             </div>
             ) : null}
@@ -1759,6 +2407,220 @@ export default function Dashboard() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Wallet Settings Dialog - Soft Wallet */}
+        <Dialog open={showWalletSettingsDialog} onOpenChange={setShowWalletSettingsDialog}>
+          <DialogContent className="z-[100]">
+            <DialogHeader>
+              <DialogTitle>Wallet Settings</DialogTitle>
+              <DialogDescription>
+                Manage settings for this wallet
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="space-y-4 py-2">
+              {/* Wallet Name/Rename Section */}
+              <div className="rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-primary/10">
+                      <Pencil className="h-4 w-4 text-primary" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="font-medium text-sm">Wallet Name</p>
+                      {isEditingLabel ? (
+                        <div className="flex items-center gap-2 mt-1">
+                          <Input
+                            value={editWalletLabel}
+                            onChange={(e) => setEditWalletLabel(e.target.value)}
+                            placeholder="Enter wallet name"
+                            className="h-8 text-sm"
+                            autoFocus
+                            data-testid="input-wallet-rename"
+                          />
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          {selectedWallet?.label || "Unnamed Wallet"}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  {isEditingLabel ? (
+                    <div className="flex gap-1">
+                      <Button 
+                        variant="ghost" 
+                        size="sm"
+                        onClick={() => {
+                          setIsEditingLabel(false);
+                          setEditWalletLabel(selectedWallet?.label || "");
+                        }}
+                        data-testid="button-cancel-rename"
+                      >
+                        Cancel
+                      </Button>
+                      <Button 
+                        size="sm"
+                        onClick={async () => {
+                          if (selectedWallet && editWalletLabel.trim()) {
+                            await renameWallet(selectedWallet.id, editWalletLabel.trim());
+                            setIsEditingLabel(false);
+                            toast({ title: "Wallet Renamed", description: `Wallet renamed to "${editWalletLabel.trim()}"` });
+                          }
+                        }}
+                        data-testid="button-save-rename"
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => setIsEditingLabel(true)}
+                      data-testid="button-rename-wallet"
+                    >
+                      <Pencil className="mr-2 h-3 w-3" />
+                      Rename
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* Recovery Phrase Section */}
+              <div className="rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-amber-500/10">
+                      <Shield className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                    </div>
+                    <div>
+                      <p className="font-medium text-sm">Recovery Phrase</p>
+                      <p className="text-xs text-muted-foreground">View your 12-word seed phrase</p>
+                    </div>
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      setShowWalletSettingsDialog(false);
+                      setTimeout(() => {
+                        setShowSecretFor("seed");
+                        setRevealPin("");
+                        setRevealError("");
+                        setDecryptedSecret("");
+                      }, 100);
+                    }}
+                    data-testid="button-show-recovery-soft"
+                  >
+                    <Eye className="mr-2 h-3 w-3" />
+                    Show
+                  </Button>
+                </div>
+              </div>
+
+              {/* Private Key Section */}
+              <div className="rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-red-500/10">
+                      <Lock className="h-4 w-4 text-red-600 dark:text-red-400" />
+                    </div>
+                    <div>
+                      <p className="font-medium text-sm">Private Key</p>
+                      <p className="text-xs text-muted-foreground">View private key for this account</p>
+                    </div>
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      setShowWalletSettingsDialog(false);
+                      setTimeout(() => {
+                        setShowSecretFor("privateKey");
+                        setRevealPin("");
+                        setRevealError("");
+                        setDecryptedSecret("");
+                      }, 100);
+                    }}
+                    data-testid="button-show-private-key-soft"
+                  >
+                    <Eye className="mr-2 h-3 w-3" />
+                    Show
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Secret Reveal Dialog - Soft Wallet */}
+        <Dialog open={!!showSecretFor} onOpenChange={(open) => {
+          if (!open) closeRevealDialog();
+        }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                {decryptedSecret ? (showSecretFor === "seed" ? "Recovery Phrase" : "Private Key") : "Enter PIN"}
+              </DialogTitle>
+              <DialogDescription>
+                {decryptedSecret 
+                  ? "Do not share this with anyone." 
+                  : `Enter your PIN to reveal your ${showSecretFor === "seed" ? "recovery phrase" : "private key"}`
+                }
+              </DialogDescription>
+            </DialogHeader>
+
+            {!decryptedSecret ? (
+              <div className="space-y-4 py-2">
+                <Input
+                  type="password"
+                  placeholder="Enter PIN"
+                  value={revealPin}
+                  onChange={(e) => {
+                    setRevealPin(e.target.value.replace(/\D/g, '').slice(0, 8));
+                    setRevealError("");
+                  }}
+                  maxLength={8}
+                  className="text-center text-lg tracking-widest"
+                  onKeyDown={(e) => e.key === "Enter" && handleRevealSecret()}
+                  data-testid="input-reveal-pin-soft"
+                />
+                {revealError && (
+                  <p className="text-sm text-destructive text-center">{revealError}</p>
+                )}
+                <DialogFooter>
+                  <Button onClick={handleRevealSecret} className="w-full" data-testid="button-reveal-confirm-soft">
+                    Reveal {showSecretFor === "seed" ? "Recovery Phrase" : "Private Key"}
+                  </Button>
+                </DialogFooter>
+              </div>
+            ) : (
+              <div className="space-y-4 py-2">
+                <div className="p-3 bg-muted rounded-md break-all font-mono text-sm" data-testid="text-revealed-secret-soft">
+                  {decryptedSecret}
+                </div>
+                <div className="flex gap-2">
+                  <Button 
+                    variant="outline" 
+                    className="flex-1"
+                    onClick={() => {
+                      navigator.clipboard.writeText(decryptedSecret);
+                      toast({ title: "Copied to clipboard" });
+                    }}
+                    data-testid="button-copy-secret-soft"
+                  >
+                    <Copy className="mr-2 h-4 w-4" />
+                    Copy
+                  </Button>
+                  <Button className="flex-1" onClick={closeRevealDialog} data-testid="button-done-secret-soft">
+                    Done
+                  </Button>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
       </div>
     );
   }
@@ -1787,15 +2649,33 @@ export default function Dashboard() {
                   Updated {clientStorage.getCacheAge(balanceCacheStatus.lastUpdated)}
                 </span>
               )}
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={handleRefresh}
-                disabled={isRefreshing || balanceCacheStatus.isRefreshing}
-                data-testid="button-refresh-portfolio"
-              >
-                <RefreshCw className={`h-4 w-4 ${isRefreshing || balanceCacheStatus.isRefreshing ? "animate-spin" : ""}`} />
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || balanceCacheStatus.isRefreshing}
+                  data-testid="button-refresh-portfolio"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isRefreshing || balanceCacheStatus.isRefreshing ? "animate-spin" : ""}`} />
+                </Button>
+                {selectedWallet && (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditWalletLabel(selectedWallet.label || "");
+                      setIsEditingLabel(false);
+                      setShowWalletSettingsDialog(true);
+                    }}
+                    data-testid="button-wallet-settings"
+                  >
+                    <Settings className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
           <div className="flex flex-wrap items-baseline gap-4">
@@ -2022,6 +2902,238 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* Wallet Settings Dialog */}
+      <Dialog open={showWalletSettingsDialog} onOpenChange={setShowWalletSettingsDialog}>
+        <DialogContent className="z-[100]">
+          <DialogHeader>
+            <DialogTitle>Wallet Settings</DialogTitle>
+            <DialogDescription>
+              Manage security settings for this wallet
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-2">
+            <div className="rounded-lg border p-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-amber-500/10">
+                    <Shield className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-sm">Recovery Phrase</p>
+                    <p className="text-xs text-muted-foreground">View your 12-word seed phrase</p>
+                  </div>
+                </div>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => {
+                    setShowSecretFor("seed");
+                    setRevealPin("");
+                    setRevealError("");
+                    setDecryptedSecret("");
+                  }}
+                >
+                  <Eye className="mr-2 h-3 w-3" />
+                  Show
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-lg border p-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-red-500/10">
+                    <Lock className="h-4 w-4 text-red-600 dark:text-red-400" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-sm">Private Key</p>
+                    <p className="text-xs text-muted-foreground">View private key for this account</p>
+                  </div>
+                </div>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => {
+                    setShowSecretFor("privateKey");
+                    setRevealPin("");
+                    setRevealError("");
+                    setDecryptedSecret("");
+                  }}
+                >
+                  <Eye className="mr-2 h-3 w-3" />
+                  Show
+                </Button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Secret Reveal Dialog */}
+      <Dialog open={!!showSecretFor} onOpenChange={(open) => {
+        if (!open) closeRevealDialog();
+      }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {decryptedSecret ? (showSecretFor === "seed" ? "Recovery Phrase" : "Private Key") : "Enter PIN"}
+            </DialogTitle>
+            <DialogDescription>
+              {decryptedSecret 
+                ? "Do not share this with anyone." 
+                : `Enter your PIN to reveal your ${showSecretFor === "seed" ? "recovery phrase" : "private key"}`
+              }
+            </DialogDescription>
+          </DialogHeader>
+
+          {!decryptedSecret ? (
+            <div className="space-y-4 py-2">
+              <Input
+                type="password"
+                placeholder="Enter PIN"
+                value={revealPin}
+                onChange={(e) => {
+                  setRevealPin(e.target.value.replace(/\D/g, '').slice(0, 8));
+                  setRevealError("");
+                }}
+                maxLength={8}
+                className="text-center text-lg tracking-widest"
+                onKeyDown={(e) => e.key === "Enter" && handleRevealSecret()}
+              />
+              {revealError && (
+                <p className="text-sm text-destructive text-center">{revealError}</p>
+              )}
+              <DialogFooter>
+                <Button variant="outline" onClick={closeRevealDialog}>Cancel</Button>
+                <Button onClick={handleRevealSecret} disabled={isRevealing || !revealPin}>
+                  {isRevealing ? "Verifying..." : "Reveal"}
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <div className="space-y-4 py-2">
+              <div className="relative rounded-md bg-muted p-4 font-mono text-sm break-all">
+                {decryptedSecret}
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="absolute right-2 top-2 h-8 w-8"
+                  onClick={() => {
+                    navigator.clipboard.writeText(decryptedSecret);
+                    toast({ title: "Copied", description: "Copied to clipboard" });
+                  }}
+                >
+                  <Copy className="h-4 w-4" />
+                </Button>
+              </div>
+              
+              {showSecretFor === "seed" && (
+                <div className="grid grid-cols-3 gap-2 mt-2">
+                  {decryptedSecret.split(" ").map((word, i) => (
+                    <div key={i} className="flex items-center gap-2 p-2 rounded bg-background border text-xs">
+                      <span className="text-muted-foreground w-4">{i+1}.</span>
+                      <span className="font-medium">{word}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              <DialogFooter>
+                <Button onClick={closeRevealDialog}>Close</Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* WalletConnect QR Scanner Dialog */}
+      <Dialog 
+        open={showWcScannerDialog} 
+        onOpenChange={(open) => {
+          if (!open) {
+            stopScanner();
+            setWcUri("");
+            setWcScanError(null);
+          }
+          setShowWcScannerDialog(open);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ScanLine className="h-5 w-5" />
+              Scan WalletConnect QR
+            </DialogTitle>
+            <DialogDescription>
+              Scan a WalletConnect QR code to connect to a DApp
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            {/* Camera Scanner */}
+            <div className="relative">
+              <div 
+                id="wc-qr-scanner" 
+                ref={scannerContainerRef}
+                className="w-full aspect-square rounded-lg overflow-hidden bg-muted"
+              />
+              {!wcScannerActive && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-muted">
+                  <Camera className="h-12 w-12 text-muted-foreground" />
+                  <Button onClick={startScanner} disabled={isWcConnecting}>
+                    <Camera className="mr-2 h-4 w-4" />
+                    Start Camera
+                  </Button>
+                </div>
+              )}
+            </div>
+            
+            {wcScanError && (
+              <p className="text-sm text-destructive text-center">{wcScanError}</p>
+            )}
+            
+            {/* Manual URI Input */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="wc-uri">Or paste WalletConnect URI</Label>
+                <Button size="sm" variant="ghost" onClick={handlePasteUri}>
+                  <Clipboard className="mr-2 h-3 w-3" />
+                  Paste
+                </Button>
+              </div>
+              <Textarea
+                id="wc-uri"
+                placeholder="wc:..."
+                value={wcUri}
+                onChange={(e) => setWcUri(e.target.value)}
+                className="font-mono text-xs"
+                rows={3}
+              />
+            </div>
+          </div>
+          
+          <DialogFooter className="gap-2">
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                stopScanner();
+                setShowWcScannerDialog(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={() => handleWcConnect()}
+              disabled={!wcUri.trim() || isWcConnecting}
+            >
+              {isWcConnecting ? "Connecting..." : "Connect"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
     </div>
   );
 }
