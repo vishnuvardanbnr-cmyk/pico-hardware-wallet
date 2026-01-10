@@ -490,6 +490,34 @@ class SoftWallet {
   // Caller is responsible for clearing the seed after use
   async verifyAndDecryptWalletGroup(walletGroupId: string, pin: string): Promise<string | null> {
     try {
+      // Handle PRIMARY_WALLET_GROUP
+      if (!walletGroupId || walletGroupId === PRIMARY_WALLET_GROUP) {
+        const storedPinHash = await clientStorage.getPinHash();
+        const storedPinSalt = await clientStorage.getPinSalt();
+        const encryptedSeed = await clientStorage.getEncryptedSeed();
+
+        if (!storedPinHash || !storedPinSalt || !encryptedSeed) {
+           this.setState({ error: "No primary wallet found. Please set up first." });
+           return null;
+        }
+
+        const isValid = await this.verifyPin(pin, storedPinHash, storedPinSalt);
+        if (!isValid) {
+          this.setState({ error: "Incorrect PIN" });
+          return null;
+        }
+
+        try {
+          const decryptedSeed = await this.decryptSeed(encryptedSeed, pin);
+          this.setState({ error: null });
+          return decryptedSeed;
+        } catch {
+          this.setState({ error: "Failed to decrypt wallet. Incorrect PIN or corrupted data." });
+          return null;
+        }
+      }
+
+      // Handle Secondary Wallet Groups
       const walletSeed = await clientStorage.getWalletSeed(walletGroupId);
       if (!walletSeed) {
         this.setState({ error: `No wallet group found for ${walletGroupId}` });
