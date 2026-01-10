@@ -53,6 +53,124 @@ const TOKEN_GAS_LIMITS: Record<string, number> = {
 // EVM chain IDs that support eth_gasPrice
 const EVM_CHAINS = new Set(['chain-0', 'chain-3', 'chain-4', 'chain-5', 'chain-6', 'chain-7']);
 
+// Chain symbol to RPC endpoint mapping for NFT API
+const CHAIN_TO_RPC: Record<string, string> = {
+  'ETH': 'https://eth.llamarpc.com',
+  'BNB': 'https://bsc-dataseed1.binance.org',
+  'MATIC': 'https://polygon-rpc.com',
+  'ARB': 'https://arb1.arbitrum.io/rpc',
+};
+
+// ERC721 ABI function selectors
+const ERC721_TOKEN_URI = '0xc87b56dd'; // tokenURI(uint256)
+const ERC721_OWNER_OF = '0x6352211e'; // ownerOf(uint256)
+const ERC1155_URI = '0x0e89341c'; // uri(uint256)
+
+function padTokenId(tokenId: string): string {
+  const hex = BigInt(tokenId).toString(16);
+  return hex.padStart(64, '0');
+}
+
+async function fetchTokenURI(rpcUrl: string, contractAddress: string, tokenId: string): Promise<string | null> {
+  try {
+    // Try ERC721 tokenURI first
+    const tokenIdPadded = padTokenId(tokenId);
+    const data = ERC721_TOKEN_URI + tokenIdPadded;
+    
+    const response = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'eth_call',
+        params: [{ to: contractAddress, data }, 'latest'],
+        id: 1,
+      }),
+    });
+    
+    const result = await response.json();
+    if (result.result && result.result !== '0x') {
+      // Decode the string from ABI encoding
+      const hex = result.result.slice(2);
+      if (hex.length >= 128) {
+        const length = parseInt(hex.slice(64, 128), 16);
+        const stringHex = hex.slice(128, 128 + length * 2);
+        const uri = Buffer.from(stringHex, 'hex').toString('utf8');
+        return uri;
+      }
+    }
+    
+    // Try ERC1155 uri
+    const data1155 = ERC1155_URI + tokenIdPadded;
+    const response1155 = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'eth_call',
+        params: [{ to: contractAddress, data: data1155 }, 'latest'],
+        id: 1,
+      }),
+    });
+    
+    const result1155 = await response1155.json();
+    if (result1155.result && result1155.result !== '0x') {
+      const hex = result1155.result.slice(2);
+      if (hex.length >= 128) {
+        const length = parseInt(hex.slice(64, 128), 16);
+        const stringHex = hex.slice(128, 128 + length * 2);
+        let uri = Buffer.from(stringHex, 'hex').toString('utf8');
+        // Replace {id} placeholder with actual token ID
+        uri = uri.replace('{id}', BigInt(tokenId).toString(16).padStart(64, '0'));
+        return uri;
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('[NFT] Error fetching tokenURI:', error);
+    return null;
+  }
+}
+
+async function fetchMetadataFromURI(uri: string): Promise<any | null> {
+  try {
+    let fetchUrl = uri;
+    
+    // Handle IPFS URLs
+    if (uri.startsWith('ipfs://')) {
+      fetchUrl = `https://ipfs.io/ipfs/${uri.slice(7)}`;
+    } else if (uri.startsWith('ar://')) {
+      fetchUrl = `https://arweave.net/${uri.slice(5)}`;
+    }
+    
+    // Handle data URIs
+    if (uri.startsWith('data:application/json')) {
+      const base64 = uri.split(',')[1];
+      if (base64) {
+        return JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
+      }
+      const jsonStr = uri.split(',')[1] || uri.split(';')[1]?.split(',')[1];
+      if (jsonStr) {
+        return JSON.parse(decodeURIComponent(jsonStr));
+      }
+    }
+    
+    const response = await fetch(fetchUrl, { 
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(10000)
+    });
+    
+    if (response.ok) {
+      return await response.json();
+    }
+    return null;
+  } catch (error) {
+    console.error('[NFT] Error fetching metadata:', error);
+    return null;
+  }
+}
+
 async function fetchGasPrice(chainId: string): Promise<{ gasPriceWei: bigint; gasPriceGwei: string } | null> {
   const rpcUrl = CHAIN_RPC_ENDPOINTS[chainId];
   if (!rpcUrl) return null;
@@ -90,6 +208,73 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   
+  // NFT proxy endpoint - returns empty for now (listing requires indexed data)
+  // Users can add custom NFTs via the /api/nft-metadata endpoint
+  app.get('/api/nfts', async (req, res) => {
+    const walletAddress = req.query.address as string;
+    const chainSymbol = req.query.chain as string;
+    
+    if (!walletAddress || !chainSymbol) {
+      return res.json({ assets: [], error: 'Missing address or chain' });
+    }
+    
+    const rpcUrl = CHAIN_TO_RPC[chainSymbol];
+    if (!rpcUrl) {
+      return res.json({ assets: [], error: 'Chain not supported for NFT fetching' });
+    }
+    
+    // Note: Direct RPC doesn't support listing all NFTs for an address
+    // Users can manually add NFTs using contract address and token ID
+    res.json({ assets: [], message: 'Use Add Custom NFT to import NFTs by contract address' });
+  });
+
+  // NFT metadata proxy endpoint - fetches single NFT metadata via direct RPC
+  app.get('/api/nft-metadata', async (req, res) => {
+    const contractAddress = req.query.contract as string;
+    const tokenId = req.query.tokenId as string;
+    const chainSymbol = req.query.chain as string;
+    
+    if (!contractAddress || !tokenId || !chainSymbol) {
+      return res.json({ result: null, error: 'Missing contract, tokenId, or chain' });
+    }
+    
+    const rpcUrl = CHAIN_TO_RPC[chainSymbol];
+    if (!rpcUrl) {
+      return res.json({ result: null, error: 'Chain not supported for NFT fetching' });
+    }
+    
+    try {
+      // Fetch token URI from the contract
+      const tokenURI = await fetchTokenURI(rpcUrl, contractAddress, tokenId);
+      
+      if (!tokenURI) {
+        return res.json({ result: null, error: 'Could not fetch token URI from contract' });
+      }
+      
+      // Fetch metadata from the URI
+      const metadata = await fetchMetadataFromURI(tokenURI);
+      
+      if (!metadata) {
+        return res.json({ result: null, error: 'Could not fetch metadata from token URI' });
+      }
+      
+      res.json({ 
+        result: {
+          metadata: {
+            name: metadata.name,
+            description: metadata.description,
+            image: metadata.image,
+          },
+          collectionName: metadata.collection?.name || metadata.name,
+          contractType: 'ERC721',
+        }
+      });
+    } catch (error) {
+      console.error('[NFT API] Error:', error);
+      res.json({ result: null, error: 'Failed to fetch NFT metadata' });
+    }
+  });
+
   // Gas estimate endpoint
   app.get('/api/gas-estimate', async (req, res) => {
     const chainId = req.query.chainId as string;
